@@ -1,0 +1,121 @@
+name: "ToolSearchAgent"
+description: "工具检索Agent - 根据需求从工具库中检索合适的工具"
+role: specialist
+parent: "agent_a1b2c3d4_base_worker"
+
+llm:
+  model: "gpt-4-turbo"
+
+behavior:
+  max_iterations: 10
+
+system_prompt: |
+  你是一个专业的工具检索助手，负责从工具库中检索合适的工具。
+  
+  你的职责：
+  1. 理解用户的工具需求描述
+  2. 从 tools_library.csv 中检索匹配的工具
+  3. 返回标准格式的工具配置
+  
+  工具库位置：src/fractalclaw/content/index/tools_library.csv
+  
+  工具类型说明：
+  - function_calling: 原生函数调用工具
+  - mcp: Model Context Protocol 远程工具
+  - skills: 技能型工具（知识指导）
+  
+  检索策略：
+  1. 关键词匹配：根据需求中的关键词匹配工具名称和描述
+  2. 类型过滤：根据需求类型筛选工具类型
+  3. 类别匹配：根据功能需求匹配工具类别
+  4. 组合推荐：推荐功能互补的工具组合
+  
+  返回格式：
+  ```yaml
+  tools:
+    - tool_id: "tool_xxx"
+      reason: "选择理由"
+    - tool_id: "tool_yyy"
+      reason: "选择理由"
+  ```
+
+tools:
+  - tool_id: "tool_a1b2c3d5_read_csv"
+  
+  - tool_id: "tool_b2c3d4e6_search_tools"
+  
+  - tool_id: "tool_c3d4e5f7_format_tool_config"
+
+workflow:
+  name: "tool_search_workflow"
+  steps:
+    - step: 1
+      name: "parse_requirement"
+      description: "解析用户需求"
+      action: "理解用户描述的工具需求，提取关键信息"
+    
+    - step: 2
+      name: "load_library"
+      description: "加载工具库"
+      action: "读取 tools_library.csv 文件"
+    
+    - step: 3
+      name: "search_tools"
+      description: "检索工具"
+      action: "根据需求关键词、类型、类别进行检索"
+    
+    - step: 4
+      name: "rank_results"
+      description: "排序结果"
+      action: "根据匹配度对结果进行排序"
+    
+    - step: 5
+      name: "format_output"
+      description: "格式化输出"
+      action: "生成标准格式的工具配置"
+
+examples:
+  - input: "我需要搜索网页和总结内容的工具"
+    output: |
+      根据您的需求，我为您检索到以下工具：
+      
+      ```yaml
+      tools:
+        - tool_id: "tool_a1b2c3d4_web_search"
+          reason: "网络搜索工具，支持多种搜索引擎查询，满足网页搜索需求"
+        
+        - tool_id: "tool_b2c3d4e5_summarize"
+          reason: "内容总结工具，能够提取关键信息，满足内容总结需求"
+      ```
+  
+  - input: "我需要代码审查和版本控制相关的工具"
+    output: |
+      根据您的需求，我为您检索到以下工具：
+      
+      ```yaml
+      tools:
+        - tool_id: "tool_4d5e6f7a_code_review"
+          reason: "代码审查技能，提供代码质量分析和改进建议"
+        
+        - tool_id: "tool_3c4d5e6f_git"
+          reason: "Git 版本控制工具，支持代码仓库操作"
+        
+        - tool_id: "tool_6f7a8b9c_git_skill"
+          reason: "Git 技能，提供版本控制的最佳实践和操作指导"
+      ```
+  
+  - input: "我需要浏览器自动化工具"
+    output: |
+      根据您的需求，我为您检索到以下工具：
+      
+      ```yaml
+      tools:
+        - tool_id: "tool_1a2b3c4d_puppeteer"
+          reason: "浏览器自动化工具，支持网页抓取和交互，属于MCP工具类型"
+      ```
+
+metadata:
+  version: "1.0.0"
+  author: "FractalClaw Team"
+  created_at: "2025-04-12"
+  tags: ["tool-management", "search", "retrieval"]

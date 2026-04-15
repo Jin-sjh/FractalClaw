@@ -1,0 +1,30 @@
+llm:
+  temperature: 0.7
+  max_tokens: 4096
+  top_p: 1.0
+  stream: true
+  timeout: 60.0
+
+behavior:
+  max_iterations: 10
+  enable_planning: true
+  enable_reflection: true
+  max_replan_attempts: 3
+
+memory:
+  max_working_entries: 10
+  enable_persistence: true
+  enable_session_save: true
+  enable_daily_log: true
+  enable_working_memory: true
+  heartbeat_interval_hours: 24
+
+planning:
+  max_depth: 5
+  max_subtasks: 10
+  enable_parallel: true
+
+tools:
+  max_concurrent_calls: 5
+  default_timeout: 30.0
+  enable_approval: false

@@ -1,0 +1,25 @@
+{
+  "mcp": {
+    "puppeteer": {
+      "type": "stdio",
+      "command": "npx",
+      "args": ["-y", "@modelcontextprotocol/server-puppeteer"],
+      "env": {}
+    },
+    "slack": {
+      "type": "stdio",
+      "command": "npx",
+      "args": ["-y", "@modelcontextprotocol/server-slack"],
+      "env": {
+        "SLACK_BOT_TOKEN": "${SLACK_BOT_TOKEN}",
+        "SLACK_TEAM_ID": "${SLACK_TEAM_ID}"
+      }
+    },
+    "git": {
+      "type": "stdio",
+      "command": "python",
+      "args": ["-m", "mcp_server_git", "--repository", "."],
+      "env": {}
+    }
+  }
+}
