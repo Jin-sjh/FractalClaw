@@ -1,5 +1,7 @@
 """Scheduler module - manages task projects and orchestrates agent execution."""
 
+from __future__ import annotations
+
 import json
 import os
 import shutil
@@ -19,6 +21,7 @@ from ..tools import ToolManager
 from .agent_workspace import AgentWorkspaceManager, WorkDocument
 
 if TYPE_CHECKING:
+    from ..agent.factory import AgentFactory
     from ..agent import SubAgentRequirement
 
 
@@ -80,16 +83,27 @@ class SchedulerConfig:
 class Scheduler:
     """任务调度器，管理项目任务的生命周期和Agent执行。"""
 
-    def __init__(self, config: Optional[SchedulerConfig] = None):
+    def __init__(
+        self,
+        config: Optional[SchedulerConfig] = None,
+        agent_factory: Optional["AgentFactory"] = None,
+    ):
         self.config = config or SchedulerConfig()
         self._tasks: dict[str, TaskProject] = {}
         self._agents: dict[str, Agent] = {}
+        self._agent_factory = agent_factory
 
         if not self.config.workspace_root:
             self.config.workspace_root = self._get_default_workspace()
 
         self._ensure_workspace_exists()
         self._workspace_manager = AgentWorkspaceManager(Path(self.config.workspace_root))
+        if self._agent_factory:
+            self._agent_factory.set_workspace_manager(self._workspace_manager)
+
+    def set_agent_factory(self, agent_factory: "AgentFactory") -> None:
+        self._agent_factory = agent_factory
+        self._agent_factory.set_workspace_manager(self._workspace_manager)
 
     def _get_default_workspace(self) -> str:
         current_file = Path(__file__).resolve()
@@ -411,6 +425,7 @@ class Scheduler:
         self,
         task_id: str,
         agent_config: Optional[AgentConfig] = None,
+        existing_config_path: Optional[Path] = None,
     ) -> AgentResult:
         """执行指定任务。"""
         task = self.get_task(task_id)
@@ -425,7 +440,15 @@ class Scheduler:
             role=AgentRole.ROOT,
         )
 
-        agent = BaseAgent(config)
+        if self._agent_factory and existing_config_path and existing_config_path.exists():
+            with open(existing_config_path, "r", encoding="utf-8") as f:
+                config_dict = yaml.safe_load(f) or {}
+            config_dict["role"] = config.role.value
+            agent = self._agent_factory.create_from_dict(config_dict)
+        elif self._agent_factory:
+            agent = self._agent_factory.create_from_config(config)
+        else:
+            agent = BaseAgent(config)
         self._agents[task_id] = agent
 
         workspace_path = Path(task.workspace_path)
@@ -436,7 +459,12 @@ class Scheduler:
             acceptance_criteria=task.metadata.get("acceptance_criteria", ""),
             parent_task=None,
         )
-        self._workspace_manager.setup_agent_files(workspace_path, agent, work_doc)
+        self._workspace_manager.setup_agent_files(
+            workspace_path,
+            agent,
+            work_doc,
+            existing_config_path=existing_config_path,
+        )
 
         context = AgentContext(
             task=task.instruction,

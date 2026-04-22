@@ -1,164 +1,186 @@
-#!/usr/bin/env python3
-"""测试任务工作区文件结构优化"""
+"""Tests for workspace structure and delegation safeguards."""
 
 import asyncio
-import tempfile
-from pathlib import Path
 
-from fractalclaw.scheduler.scheduler import TaskScheduler, TaskStatus, TaskPriority
+from fractalclaw.agent.base import AgentConfig, AgentContext, AgentResult, AgentRole, BaseAgent, PlanResult, SubAgentRequirement
+from fractalclaw.plan import Plan, Task, TaskPriority, TaskType
 from fractalclaw.scheduler.agent_workspace import AgentWorkspaceManager, WorkDocument
-from fractalclaw.memory import MemoryManager, MemoryConfig
 
 
-async def test_task_structure():
-    """测试任务创建后的文件结构"""
-    
-    with tempfile.TemporaryDirectory() as tmpdir:
-        workspace_root = Path(tmpdir) / "workspace"
-        workspace_root.mkdir(parents=True)
-        
-        scheduler = TaskScheduler(workspace_root=str(workspace_root))
-        
-        task = scheduler.create_task(
-            name="测试任务",
-            description="这是一个测试任务",
-            instruction="测试任务工作区文件结构优化",
-            priority=TaskPriority.HIGH
+class StaticChildAgent(BaseAgent):
+    async def run(self, context: AgentContext) -> AgentResult:
+        return AgentResult(
+            success=True,
+            output=f"done:{context.task}",
+            metadata={"task_id": context.task_id},
         )
-        
-        print(f"任务创建成功: {task.id}")
-        print(f"工作区路径: {task.workspace_path}")
-        
-        task_path = Path(task.workspace_path)
-        
-        print("\n=== 验证文件结构 ===")
-        
-        print("\n1. 检查 output 目录:")
-        output_dir = task_path / "output"
-        if output_dir.exists():
-            print("   ✅ output 目录存在")
-        else:
-            print("   ❌ output 目录不存在")
-        
-        print("\n2. 检查 README.md 是否删除:")
-        readme_path = task_path / "README.md"
-        if not readme_path.exists():
-            print("   ✅ README.md 已删除")
-        else:
-            print("   ❌ README.md 仍然存在")
-        
-        print("\n3. 检查 task_metadata.json 是否删除:")
-        old_metadata_path = task_path / "task_metadata.json"
-        if not old_metadata_path.exists():
-            print("   ✅ task_metadata.json 已删除")
-        else:
-            print("   ❌ task_metadata.json 仍然存在")
-        
-        print("\n4. 检查 memory/semantic/task_metadata.yaml:")
-        new_metadata_path = task_path / "memory" / "semantic" / "task_metadata.yaml"
-        if new_metadata_path.exists():
-            print("   ✅ task_metadata.yaml 存在")
-            import yaml
-            with open(new_metadata_path, 'r', encoding='utf-8') as f:
-                metadata = yaml.safe_load(f)
-            print(f"   任务ID: {metadata['id']}")
-            print(f"   任务名称: {metadata['name']}")
-            print(f"   任务状态: {metadata['status']}")
-        else:
-            print("   ❌ task_metadata.yaml 不存在")
-        
-        print("\n5. 检查 memory 目录结构:")
-        memory_path = task_path / "memory"
-        if memory_path.exists():
-            print("   ✅ memory 目录存在")
-            
-            semantic_dir = memory_path / "semantic"
-            episodic_dir = memory_path / "episodic"
-            shared_dir = memory_path / "shared"
-            
-            if semantic_dir.exists():
-                print("   ✅ semantic 目录存在")
-            else:
-                print("   ❌ semantic 目录不存在")
-            
-            if episodic_dir.exists():
-                print("   ✅ episodic 目录存在")
-                daily_dir = episodic_dir / "daily"
-                sessions_dir = episodic_dir / "sessions"
-                if daily_dir.exists():
-                    print("   ✅ episodic/daily 目录存在")
-                else:
-                    print("   ❌ episodic/daily 目录不存在")
-                if sessions_dir.exists():
-                    print("   ✅ episodic/sessions 目录存在")
-                else:
-                    print("   ❌ episodic/sessions 目录不存在")
-            else:
-                print("   ❌ episodic 目录不存在")
-            
-            if shared_dir.exists():
-                print("   ✅ shared 目录存在")
-            else:
-                print("   ❌ shared 目录不存在")
-        else:
-            print("   ❌ memory 目录不存在")
-        
-        print("\n6. 检查 memory/INDEX.md:")
-        index_path = memory_path / "INDEX.md"
-        if index_path.exists():
-            print("   ✅ INDEX.md 存在")
-            content = index_path.read_text(encoding='utf-8')
-            print(f"   内容预览:\n{content[:200]}...")
-        else:
-            print("   ❌ INDEX.md 不存在")
-        
-        print("\n=== 测试完成 ===")
 
 
-async def test_work_document():
-    """测试 work.md 迁移到 memory/semantic/task_requirements.md"""
-    
-    with tempfile.TemporaryDirectory() as tmpdir:
-        workspace_root = Path(tmpdir) / "workspace"
-        workspace_root.mkdir(parents=True)
-        
-        workspace_manager = AgentWorkspaceManager(workspace_root)
-        
-        test_workspace = workspace_root / "test_task"
-        test_workspace.mkdir(parents=True)
-        
-        work_doc = WorkDocument(
-            task_requirement="测试任务需求",
-            acceptance_criteria="验收标准",
-            created_at="2026-04-14T10:00:00",
-            updated_at="2026-04-14T10:00:00"
+class SharedRuntimeStaticChildAgent(BaseAgent):
+    async def run(self, context: AgentContext) -> AgentResult:
+        assert self._delegation_runtime["delegation_count"] == 3
+        return AgentResult(
+            success=True,
+            output=f"runtime:{context.task}",
+            metadata={"task_id": context.task_id},
         )
-        
-        workspace_manager.write_work_document(test_workspace, work_doc)
-        
-        print("\n=== 测试 work.md 迁移 ===")
-        
-        old_work_path = test_workspace / "work.md"
-        if not old_work_path.exists():
-            print("   ✅ work.md 已删除")
-        else:
-            print("   ❌ work.md 仍然存在")
-        
-        new_work_path = test_workspace / "memory" / "semantic" / "task_requirements.md"
-        if new_work_path.exists():
-            print("   ✅ task_requirements.md 存在")
-            content = new_work_path.read_text(encoding='utf-8')
-            print(f"   内容预览:\n{content[:200]}...")
-        else:
-            print("   ❌ task_requirements.md 不存在")
-        
-        print("\n=== 测试完成 ===")
 
 
-if __name__ == "__main__":
-    print("开始测试任务工作区文件结构优化...\n")
-    
-    asyncio.run(test_task_structure())
-    asyncio.run(test_work_document())
-    
-    print("\n所有测试完成！")
+def test_workspace_manager_copies_existing_config(tmp_path):
+    workspace_manager = AgentWorkspaceManager(tmp_path)
+    workspace_path = tmp_path / "task"
+    workspace_path.mkdir()
+
+    existing = workspace_path / "runtime_agent.yaml"
+    existing.write_text("name: RuntimeChild\nrole: specialist\n", encoding="utf-8")
+
+    agent = BaseAgent(
+        AgentConfig(
+            name="RuntimeChild",
+            description="child",
+            role=AgentRole.SPECIALIST,
+        )
+    )
+
+    workspace_manager.setup_agent_files(
+        workspace_path,
+        agent,
+        WorkDocument(task_requirement="implement child task", acceptance_criteria="return summary"),
+        existing_config_path=existing,
+    )
+
+    copied = workspace_path / "agent_config.yaml"
+    task_doc = workspace_path / "memory" / "semantic" / "task_requirements.md"
+
+    assert copied.exists()
+    assert copied.read_text(encoding="utf-8") == existing.read_text(encoding="utf-8")
+    assert task_doc.exists()
+
+
+def test_plan_ready_tasks_only_returns_leaf_nodes():
+    root = Task(
+        id="root",
+        name="root",
+        description="root",
+        task_type=TaskType.COMPOSITE,
+    )
+    child = Task(
+        id="child",
+        name="child",
+        description="child",
+        task_type=TaskType.COMPOSITE,
+    )
+    leaf = Task(
+        id="leaf",
+        name="leaf",
+        description="leaf",
+        task_type=TaskType.ATOMIC,
+    )
+    child.subtasks.append(leaf)
+    root.subtasks.append(child)
+
+    plan = Plan(id="plan_1", name="demo", description="demo", root_task=root)
+    ready = plan.get_ready_tasks(set())
+
+    assert [task.id for task in ready] == ["leaf"]
+
+
+def test_execute_subtask_creates_and_uses_child_agent(tmp_path):
+    async def _run():
+        workspace_manager = AgentWorkspaceManager(tmp_path)
+        parent = BaseAgent(
+            AgentConfig(
+                name="Parent",
+                description="delegate work",
+                role=AgentRole.COORDINATOR,
+            )
+        )
+        parent_workspace = await workspace_manager.create_agent_workspace(parent)
+        parent.set_workspace(parent_workspace, workspace_manager)
+
+        requirement = SubAgentRequirement(
+            agent_name="ChildWorker",
+            agent_type="worker",
+            task_description="Handle delegated leaf task",
+            expected_output="completed leaf task",
+        )
+        parent._last_plan_result = PlanResult(
+            needs_subagents=True,
+            subagent_requirements=[requirement],
+        )
+
+        child = StaticChildAgent(
+            AgentConfig(
+                name="ChildWorker",
+                description="child",
+                role=AgentRole.WORKER,
+            )
+        )
+        child_workspace = await workspace_manager.create_agent_workspace(child, parent_workspace=parent_workspace)
+        child.set_workspace(child_workspace, workspace_manager)
+
+        async def _create_subagent(req, depth):
+            assert req.agent_name == "ChildWorker"
+            assert depth == 1
+            return child
+
+        parent._create_subagent = _create_subagent
+
+        task = parent.planner.create_task(
+            name="delegated",
+            description="do delegated work",
+            task_type=TaskType.ATOMIC,
+            priority=TaskPriority.MEDIUM,
+        )
+        task.assigned_agent = "ChildWorker"
+
+        result = await parent._execute_subtask(task, AgentContext(task="top-level task"))
+
+        assert result.success is True
+        assert result.output == "done:do delegated work"
+        assert task.metadata["assigned_agent_id"] == child.id
+        assert task.metadata["assigned_agent_name"] == child.name
+
+    asyncio.run(_run())
+
+
+def test_existing_child_uses_parent_shared_runtime(tmp_path):
+    async def _run():
+        workspace_manager = AgentWorkspaceManager(tmp_path)
+        parent = BaseAgent(
+            AgentConfig(
+                name="Parent",
+                description="delegate work",
+                role=AgentRole.COORDINATOR,
+            )
+        )
+        parent._delegation_runtime["delegation_count"] = 3
+        parent_workspace = await workspace_manager.create_agent_workspace(parent)
+        parent.set_workspace(parent_workspace, workspace_manager)
+
+        child = SharedRuntimeStaticChildAgent(
+            AgentConfig(
+                name="StaticChild",
+                description="child",
+                role=AgentRole.WORKER,
+            )
+        )
+        child._delegation_runtime["delegation_count"] = 0
+        child_workspace = await workspace_manager.create_agent_workspace(child, parent_workspace=parent_workspace)
+        child.set_workspace(child_workspace, workspace_manager)
+        parent.add_child(child)
+
+        task = parent.planner.create_task(
+            name="delegated",
+            description="use static child",
+            task_type=TaskType.ATOMIC,
+            priority=TaskPriority.MEDIUM,
+        )
+        task.assigned_agent = "StaticChild"
+
+        result = await parent._execute_subtask(task, AgentContext(task="top-level task"))
+
+        assert result.success is True
+        assert child._delegation_runtime is parent._delegation_runtime
+
+    asyncio.run(_run())

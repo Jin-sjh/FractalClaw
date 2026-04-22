@@ -1,8 +1,11 @@
 """Built-in tools for FractalClaw."""
 
+from __future__ import annotations
+
 from typing import TYPE_CHECKING, Any, Optional
 
 from fractalclaw.tools.base import BaseTool
+from fractalclaw.tools.builtin.bash import BashTool, ListDirectoryTool
 from fractalclaw.tools.builtin.read import ReadTool
 from fractalclaw.tools.builtin.write import EditTool, WriteTool
 from fractalclaw.tools.builtin.search import FindFilesTool, SearchTool
@@ -14,6 +17,8 @@ if TYPE_CHECKING:
 
 __all__ = [
     "get_builtin_tools",
+    "BashTool",
+    "ListDirectoryTool",
     "ReadTool",
     "WriteTool",
     "EditTool",
@@ -24,6 +29,8 @@ __all__ = [
 ]
 
 _BUILTIN_TOOLS: list[type[BaseTool]] = [
+    BashTool,
+    ListDirectoryTool,
     ReadTool,
     WriteTool,
     EditTool,

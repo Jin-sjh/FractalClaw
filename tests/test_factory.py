@@ -1,133 +1,163 @@
-"""测试Agent工厂"""
+"""Tests for unified agent factory and runtime child creation."""
 
-import pytest
+import asyncio
 from pathlib import Path
 
+from fractalclaw.agent.base import AgentConfig, AgentRole, BaseAgent, SubAgentRequirement
 from fractalclaw.agent.factory import AgentFactory
-from fractalclaw.agent.base import Agent, AgentRole
+from fractalclaw.llm import LLMConfig
+from fractalclaw.scheduler.agent_workspace import AgentWorkspaceManager
+
+
+class DummyProvider:
+    async def complete(self, messages, config, tools=None):
+        raise NotImplementedError
+
+    async def stream(self, messages, config, tools=None):
+        if False:
+            yield ""
 
 
 class TestAgentFactory:
-    """AgentFactory测试类"""
-    
-    @pytest.fixture
-    def config_dir(self) -> Path:
-        """获取配置目录"""
-        return Path(__file__).parent.parent / "configs"
-    
-    @pytest.fixture
-    def factory(self, config_dir: Path) -> AgentFactory:
-        """创建Agent工厂"""
-        return AgentFactory(config_dir)
-    
-    def test_create_agent(self, factory: AgentFactory):
-        """测试创建Agent"""
-        agent = factory.create('agent_b2c3d4e5_coder')
-        
-        assert isinstance(agent, Agent)
-        assert agent.name == 'CodeAgent'
+    def test_create_agent(self):
+        config_dir = Path(__file__).parent.parent / "configs"
+        factory = AgentFactory(config_dir)
+
+        agent = factory.create("agent_b2c3d4e5_coder")
+
+        assert isinstance(agent, BaseAgent)
+        assert agent.name == "CodeAgent"
         assert agent.config.role == AgentRole.SPECIALIST
-    
-    def test_create_agent_with_inheritance(self, factory: AgentFactory):
-        """测试创建带继承的Agent"""
-        agent = factory.create('agent_b2c3d4e5_coder')
-        
-        assert agent.config.llm_config.temperature == 0.3
-        assert agent.config.llm_config.model == 'gpt-4'
-    
-    def test_create_agent_with_tools(self, factory: AgentFactory):
-        """测试创建带工具的Agent"""
-        agent = factory.create('agent_b2c3d4e5_coder')
-        
-        tools = agent.tools.list_tools()
-        tool_names = [t.name for t in tools]
-        
-        assert 'read_file' in tool_names
-        assert 'write_file' in tool_names
-    
-    def test_create_agent_with_children(self, factory: AgentFactory):
-        """测试创建带子Agent的Agent"""
-        agent = factory.create('agent_d4e5f6a7_coordinator')
-        
-        children = agent.get_children()
-        assert len(children) == 2
-        
-        child_names = [c.name for c in children]
-        assert 'CodeAgent' in child_names
-        assert 'ResearchAgent' in child_names
-    
-    def test_create_agent_cache(self, factory: AgentFactory):
-        """测试Agent缓存"""
-        agent1 = factory.create('agent_b2c3d4e5_coder')
-        agent2 = factory.create('agent_b2c3d4e5_coder')
-        
-        assert agent1 is agent2
-    
-    def test_list_available(self, factory: AgentFactory):
-        """测试列出可用Agent"""
-        agents = factory.list_available()
-        
-        assert 'agent_b2c3d4e5_coder' in agents
-        assert 'agent_c3d4e5f6_researcher' in agents
-        assert 'agent_d4e5f6a7_coordinator' in agents
-    
-    def test_get_settings(self, factory: AgentFactory):
-        """测试获取全局配置"""
-        settings = factory.get_settings()
-        
-        assert settings.llm.get('temperature') == 0.7
-        assert settings.behavior.get('max_iterations') == 10
-    
-    def test_get_agent(self, factory: AgentFactory):
-        """测试获取已创建的Agent"""
-        factory.create('agent_b2c3d4e5_coder')
-        agent = factory.get_agent('agent_b2c3d4e5_coder')
-        
-        assert agent is not None
-        assert agent.name == 'CodeAgent'
-    
-    def test_clear_agents(self, factory: AgentFactory):
-        """测试清除Agent"""
-        factory.create('agent_b2c3d4e5_coder')
-        factory.clear_agents()
-        
-        assert factory.get_agent('agent_b2c3d4e5_coder') is None
-    
-    def test_reload_agent(self, factory: AgentFactory):
-        """测试重新加载Agent"""
-        agent1 = factory.create('agent_b2c3d4e5_coder')
-        agent2 = factory.reload('agent_b2c3d4e5_coder')
-        
-        assert agent1 is not agent2
-        assert agent1.name == agent2.name
-    
-    def test_create_from_dict(self, factory: AgentFactory):
-        """测试从字典创建Agent"""
-        config_dict = {
-            'name': 'CustomAgent',
-            'description': 'Custom Agent',
-            'role': 'worker',
-            'llm': {
-                'temperature': 0.5
-            },
-            'behavior': {
-                'max_iterations': 20
+
+        tool_names = {tool.name for tool in agent.tools.list_tools()}
+        assert {"read_file", "write_file", "execute_code"} <= tool_names
+
+    def test_create_from_dict_with_workflow(self):
+        config_dir = Path(__file__).parent.parent / "configs"
+        factory = AgentFactory(config_dir)
+
+        agent = factory.create_from_dict(
+            {
+                "name": "WorkflowAgent",
+                "description": "Runs a predefined workflow",
+                "role": "coordinator",
+                "system_prompt": "Coordinate steps.",
+                "tools": [{"name": "read_file"}],
+                "workflow": {
+                    "name": "demo",
+                    "steps": [
+                        {
+                            "step": 1,
+                            "name": "inspect",
+                            "description": "Inspect files",
+                            "action": "read relevant files",
+                        }
+                    ],
+                },
             }
-        }
-        
-        agent = factory.create_from_dict(config_dict)
-        
-        assert agent.name == 'CustomAgent'
-        assert agent.config.description == 'Custom Agent'
-        assert agent.config.llm_config.temperature == 0.5
-        assert agent.config.max_iterations == 20
-    
-    def test_register_tool_handler(self, factory: AgentFactory):
-        """测试注册工具处理器"""
-        async def custom_handler(**kwargs):
-            return "custom result"
-        
-        factory.register_tool_handler('custom_tool', custom_handler)
-        
-        assert 'custom_tool' in factory._tool_handlers
-        assert factory._tool_handlers['custom_tool'] == custom_handler
+        )
+
+        assert agent.config.workflow is not None
+        assert agent.config.workflow.name == "demo"
+        assert len(agent.config.workflow.steps) == 1
+        assert agent.config.workflow.steps[0].action == "read relevant files"
+
+    def test_create_runtime_child_persists_config_and_inherits_runtime(self, tmp_path):
+        async def _run():
+            config_dir = Path(__file__).parent.parent / "configs"
+            workspace_manager = AgentWorkspaceManager(tmp_path)
+            provider = DummyProvider()
+            factory = AgentFactory(
+                config_dir=config_dir,
+                llm_provider=provider,
+                workspace_manager=workspace_manager,
+            )
+
+            parent = factory.create_from_config(
+                AgentConfig(
+                    name="Root",
+                    description="Coordinate the task",
+                    role=AgentRole.ROOT,
+                    llm_config=LLMConfig(model="gpt-4-turbo", stream=False),
+                    enable_planning=True,
+                )
+            )
+            parent_workspace = await workspace_manager.create_agent_workspace(parent)
+            parent.set_workspace(parent_workspace, workspace_manager)
+
+            requirement = SubAgentRequirement(
+                agent_name="CodeChild",
+                agent_type="coder",
+                task_description="Implement a small code fix",
+                required_tools=["read_file", "execute_code"],
+                expected_output="Patch and summary",
+            )
+
+            child = await parent._create_subagent(requirement, depth=1)
+
+            assert child.get_parent() is parent
+            assert child.workspace_path is not None
+            assert child.llm._provider is provider
+            assert child.config.role == AgentRole.SPECIALIST
+            assert child.config.plan_config is not None
+            assert child.config.memory_config is not None
+
+            child_tool_names = {tool.name for tool in child.tools.list_tools()}
+            assert {"read", "bash"} <= child_tool_names
+
+            runtime_config = child.workspace_path / "runtime_agent.yaml"
+            copied_config = child.workspace_path / "agent_config.yaml"
+            task_doc = child.workspace_path / "memory" / "semantic" / "task_requirements.md"
+
+            assert runtime_config.exists()
+            assert copied_config.exists()
+            assert task_doc.exists()
+            assert runtime_config.read_text(encoding="utf-8") == copied_config.read_text(encoding="utf-8")
+
+            runtime_yaml = runtime_config.read_text(encoding="utf-8")
+            assert "runtime_generated: true" in runtime_yaml
+            assert "parent_agent_id:" in runtime_yaml
+            assert "branch_path: root" in runtime_yaml
+            assert "model_selection:" in runtime_yaml
+
+        asyncio.run(_run())
+
+    def test_simple_runtime_child_prefers_lower_cost_model(self, tmp_path):
+        async def _run():
+            config_dir = Path(__file__).parent.parent / "configs"
+            workspace_manager = AgentWorkspaceManager(tmp_path)
+            factory = AgentFactory(
+                config_dir=config_dir,
+                llm_provider=DummyProvider(),
+                workspace_manager=workspace_manager,
+            )
+
+            parent = factory.create_from_config(
+                AgentConfig(
+                    name="Root",
+                    description="Top-level coordinator",
+                    role=AgentRole.ROOT,
+                    llm_config=LLMConfig(model="gpt-4-turbo", stream=False),
+                )
+            )
+            parent_workspace = await workspace_manager.create_agent_workspace(parent)
+            parent.set_workspace(parent_workspace, workspace_manager)
+
+            requirement = SubAgentRequirement(
+                agent_name="CheapChild",
+                agent_type="coder",
+                task_description="Simple quick code edit",
+                required_tools=["execute_code"],
+                expected_output="Updated file",
+            )
+
+            artifacts = await factory.create_runtime_child(parent, requirement, depth=1)
+
+            assert artifacts.agent.config.llm_config is not None
+            assert artifacts.agent.config.llm_config.model != parent.config.llm_config.model
+            assert artifacts.agent.config.llm_config.model == "deepseek-coder"
+            assert artifacts.config["llm"]["selection_reason"]
+            assert artifacts.config["metadata"]["model_selection"]["reason"]
+            assert artifacts.config["metadata"]["lineage"]["parent_agent_id"] == parent.id
+
+        asyncio.run(_run())

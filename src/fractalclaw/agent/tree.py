@@ -1,6 +1,9 @@
 """Agent Tree module for managing parent-child agent relationships."""
 
+from __future__ import annotations
+
 from dataclasses import dataclass, field
+
 from typing import TYPE_CHECKING, Any, Callable, Optional
 
 if TYPE_CHECKING:

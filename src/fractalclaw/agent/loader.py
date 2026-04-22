@@ -1,5 +1,7 @@
 """Agent配置加载器"""
 
+from __future__ import annotations
+
 import yaml
 from pathlib import Path
 from typing import Any, Optional

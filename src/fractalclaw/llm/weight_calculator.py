@@ -1,5 +1,7 @@
 """动态权重计算器"""
 
+from __future__ import annotations
+
 from dataclasses import dataclass
 from typing import Any, Callable, Literal, Optional
 

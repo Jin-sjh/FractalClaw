@@ -1,5 +1,7 @@
 """Enhanced Tool Manager for FractalClaw tools system."""
 
+from __future__ import annotations
+
 import asyncio
 import inspect
 import time

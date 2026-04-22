@@ -1,5 +1,7 @@
 """Permission system for FractalClaw tools."""
 
+from __future__ import annotations
+
 import fnmatch
 from dataclasses import dataclass, field
 from enum import Enum

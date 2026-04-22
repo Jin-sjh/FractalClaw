@@ -1,10 +1,12 @@
 """Shell command execution tool for FractalClaw."""
 
+from __future__ import annotations
+
 import asyncio
 import os
 import platform
 from pathlib import Path
-from typing import Optional
+from typing import Dict, Optional
 
 from pydantic import Field
 
@@ -20,7 +22,7 @@ class BashParameters(ToolParameters):
     command: str = Field(description="The command to execute")
     timeout: Optional[int] = Field(default=30, description="Timeout in seconds")
     cwd: Optional[str] = Field(default=None, description="Working directory for command execution")
-    env: Optional[dict[str, str]] = Field(default=None, description="Environment variables")
+    env: Optional[Dict[str, str]] = Field(default=None, description="Environment variables")
 
 
 class BashTool(BaseTool):

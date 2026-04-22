@@ -1,5 +1,7 @@
 """FractalClaw Main Entry - Interactive Agent Application."""
 
+from __future__ import annotations
+
 import os
 import sys
 import time
@@ -28,7 +30,6 @@ from fractalclaw.agent import (
     AgentConfig,
     AgentContext,
     AgentResult,
-    BaseAgent,
     AgentRole,
     AgentFactory,
 )
@@ -36,9 +37,7 @@ from fractalclaw.agent.config_generator import AgentConfigGenerator
 from fractalclaw.agent.loader import ConfigLoader
 from fractalclaw.scheduler import Scheduler, SchedulerConfig, TaskPriority
 from fractalclaw.scheduler.agent_workspace import AgentWorkspaceManager, WorkDocument
-from fractalclaw.llm import LLMConfig, LLMEngine, OpenAICompatibleProvider
-from fractalclaw.tools import ToolManager, ToolConfig
-from fractalclaw.tools.builtin import register_builtin_tools
+from fractalclaw.llm import LLMConfig, OpenAICompatibleProvider
 
 
 def clear_screen():
@@ -143,6 +142,7 @@ class FractalClawApp:
         self.spinner = SpinnerState()
         self.llm_config: Optional[LLMConfig] = None
         self.provider: Optional[OpenAICompatibleProvider] = None
+        self.agent_factory: Optional[AgentFactory] = None
         self._current_agent: Optional[Agent] = None
         self.session: Optional[PromptSession] = None
         self._pending_confirmation: bool = False
@@ -177,12 +177,6 @@ class FractalClawApp:
             model=model,
         )
 
-        intent_config = self._load_intent_agent_config()
-        intent_config.llm_config = self.llm_config
-
-        self.intent_agent = BaseAgent(intent_config)
-        self.intent_agent._llm.set_provider(self.provider)
-
         self.config_generator = AgentConfigGenerator(
             config_dir=self.config_path / "configs" / "agents",
             global_settings=self._load_global_settings()
@@ -192,7 +186,20 @@ class FractalClawApp:
             workspace_root=str(self.config_path / "workspace")
         )
         self.scheduler = Scheduler(scheduler_config)
-        self.workspace_manager = AgentWorkspaceManager(Path(scheduler_config.workspace_root))
+        self.workspace_manager = self.scheduler._workspace_manager
+        self.agent_factory = AgentFactory(
+            config_dir=self.config_path / "configs",
+            llm_provider=self.provider,
+            workspace_manager=self.workspace_manager,
+        )
+        self.scheduler.set_agent_factory(self.agent_factory)
+
+        intent_config = self._load_intent_agent_config()
+        intent_config.llm_config = self.llm_config
+        self.intent_agent = self.agent_factory.create_from_config(
+            intent_config,
+            cache_key="__intent_agent__",
+        )
 
     def _load_intent_agent_config(self) -> AgentConfig:
         """加载意图识别Agent配置"""
@@ -253,19 +260,25 @@ class FractalClawApp:
     async def process_user_input(self, user_input: str) -> AgentResult:
         """处理用户输入的完整流程"""
         intent_result = await self._analyze_intent_with_confirmation(user_input)
+        root_task_text = self._build_root_task_text(intent_result["requirements"])
         
         self.spinner.is_spinning = True
         self.spinner.phase = "workspace"
         self.spinner.current_words = ["Creating workspace...", "Setting up files..."]
-        workspace_path = await self._create_workspace(intent_result)
+        task = await self._create_workspace(intent_result, root_task_text)
+        workspace_path = Path(task.workspace_path)
         
         self.spinner.phase = "config"
         self.spinner.current_words = ["Generating config...", "Creating Root Agent..."]
-        root_agent_config, generation_result = await self._generate_root_agent(intent_result, workspace_path)
+        root_agent_config, generation_result = await self._generate_root_agent(
+            intent_result,
+            workspace_path,
+            root_task_text,
+        )
         
         self.spinner.phase = "execute"
         self.spinner.current_words = ["Executing...", "Running Root Agent..."]
-        result = await self._execute_root_agent(root_agent_config, workspace_path, intent_result, generation_result)
+        result = await self._execute_root_agent(task.id, root_agent_config, workspace_path, intent_result, generation_result)
         
         return result
 
@@ -396,7 +409,15 @@ class FractalClawApp:
             else:
                 cprint(f"  \033[38;5;214m重新理解意图...\033[0m\n")
 
-    async def _generate_root_agent(self, intent_result: dict, workspace_path: Path) -> tuple[AgentConfig, Optional[Any]]:
+    def _build_root_task_text(self, requirements: list[str]) -> str:
+        return "\n".join(f"- {requirement}" for requirement in requirements)
+
+    async def _generate_root_agent(
+        self,
+        intent_result: dict,
+        workspace_path: Path,
+        root_task_text: str,
+    ) -> tuple[AgentConfig, Optional[Any]]:
         """根据意图分析结果生成Root Agent配置
         
         Args:
@@ -406,19 +427,15 @@ class FractalClawApp:
         Returns:
             tuple[AgentConfig, Optional[GenerationResult]]: (Agent配置, 生成结果)
         """
-        requirements = intent_result["requirements"]
-        
-        description = "\n".join(f"- {r}" for r in requirements)
-        
         generation_result = self.config_generator.generate_from_requirement(
-            requirement=description,
+            requirement=root_task_text,
             save_path=workspace_path
         )
         
         if not generation_result.success:
             return AgentConfig(
                 name="RootAgent",
-                description=description,
+                description=root_task_text,
                 role=AgentRole.ROOT,
                 llm_config=self.llm_config,
                 max_iterations=10,
@@ -432,7 +449,7 @@ class FractalClawApp:
                 config_data = yaml.safe_load(f) or {}
             return AgentConfig(
                 name=config_data.get('name', 'RootAgent'),
-                description=config_data.get('description', description),
+                description=config_data.get('description', root_task_text),
                 role=AgentRole.ROOT,
                 llm_config=self.llm_config,
                 max_iterations=config_data.get('max_iterations', 10),
@@ -443,7 +460,7 @@ class FractalClawApp:
         
         return AgentConfig(
             name="RootAgent",
-            description=description,
+            description=root_task_text,
             role=AgentRole.ROOT,
             llm_config=self.llm_config,
             max_iterations=10,
@@ -451,7 +468,7 @@ class FractalClawApp:
             enable_reflection=True,
         ), generation_result
 
-    async def _create_workspace(self, intent_result: dict) -> Path:
+    async def _create_workspace(self, intent_result: dict, root_task_text: str):
         """创建任务工作空间"""
         requirements = intent_result["requirements"]
         acceptance = intent_result["acceptance_criteria"]
@@ -459,14 +476,14 @@ class FractalClawApp:
         task_name = self._extract_task_name(requirements)
         
         task = self.scheduler.create_project(
-            instruction="\n".join(requirements),
+            instruction=root_task_text,
             name=task_name,
             metadata={
                 "acceptance_criteria": "\n".join(acceptance) if acceptance else ""
             }
         )
         
-        return Path(task.workspace_path)
+        return task
 
     def _extract_task_name(self, requirements: list) -> str:
         """从需求中提取任务名称"""
@@ -481,6 +498,7 @@ class FractalClawApp:
 
     async def _execute_root_agent(
         self,
+        task_id: str,
         config: AgentConfig,
         workspace_path: Path,
         intent_result: dict,
@@ -494,46 +512,18 @@ class FractalClawApp:
             intent_result: 意图分析结果
             generation_result: 配置生成结果（包含配置文件路径）
         """
-        agent = BaseAgent(config)
-        agent._llm.set_provider(self.provider)
-        register_builtin_tools(agent._tools, llm_provider=self.provider)
-        
-        agent.set_workspace(workspace_path, self.workspace_manager)
-        self._current_agent = agent
-        
-        acceptance = intent_result.get("acceptance_criteria", [])
-        work_doc = WorkDocument(
-            task_requirement=config.description,
-            acceptance_criteria="\n".join(acceptance) if acceptance else "",
-        )
-        
         config_path = None
         if generation_result and generation_result.success:
             config_path = workspace_path / f"{generation_result.agent_id}.yaml"
-        
-        self.workspace_manager.setup_agent_files(
-            workspace_path, 
-            agent, 
-            work_doc,
-            existing_config_path=config_path
+        if not self.scheduler:
+            raise RuntimeError("Scheduler is not initialized")
+
+        result = await self.scheduler.execute_task(
+            task_id,
+            agent_config=config,
+            existing_config_path=config_path,
         )
-        
-        context = AgentContext(
-            task=config.description,
-            metadata={
-                "workspace_path": str(workspace_path),
-                "acceptance_criteria": acceptance
-            }
-        )
-        
-        result = await agent.run(context)
-        
-        self.workspace_manager.update_work_document_result(
-            workspace_path,
-            result.output,
-            result.success
-        )
-        
+        self._current_agent = self.scheduler._agents.get(task_id)
         return result
 
     async def _handle_new_session(self) -> None:

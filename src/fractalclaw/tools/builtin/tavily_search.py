@@ -1,7 +1,9 @@
 """Tavily search tool for FractalClaw."""
 
+from __future__ import annotations
+
 import os
-from typing import Any, Optional
+from typing import Any, List, Optional
 
 from pydantic import Field
 
@@ -17,11 +19,11 @@ class TavilySearchParameters(ToolParameters):
         default="basic",
         description="Search depth: 'basic' or 'advanced'",
     )
-    include_domains: Optional[list[str]] = Field(
+    include_domains: Optional[List[str]] = Field(
         default=None,
         description="List of domains to include in search",
     )
-    exclude_domains: Optional[list[str]] = Field(
+    exclude_domains: Optional[List[str]] = Field(
         default=None,
         description="List of domains to exclude from search",
     )

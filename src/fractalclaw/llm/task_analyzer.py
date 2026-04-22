@@ -1,6 +1,9 @@
 """LLM 任务分析器"""
 
+from __future__ import annotations
+
 import hashlib
+
 import json
 import re
 import time

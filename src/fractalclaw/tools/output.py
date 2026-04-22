@@ -1,5 +1,7 @@
 """Output handling utilities for FractalClaw tools system."""
 
+from __future__ import annotations
+
 import os
 import tempfile
 from dataclasses import dataclass, field

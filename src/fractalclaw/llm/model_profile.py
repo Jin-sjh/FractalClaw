@@ -1,5 +1,8 @@
 """模型配置数据结构"""
 
+from __future__ import annotations
+
+import os
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any, Optional
@@ -88,7 +91,6 @@ class ModelProfile:
         if not self.enabled:
             return False
         if self.api_key_env:
-            import os
             return bool(os.getenv(self.api_key_env))
         return True
     

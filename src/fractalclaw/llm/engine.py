@@ -1,5 +1,7 @@
 """LLM Engine for Agent communication with language models."""
 
+from __future__ import annotations
+
 import asyncio
 import logging
 from abc import ABC, abstractmethod

@@ -1,5 +1,7 @@
 """Plan Manager for task decomposition and planning."""
 
+from __future__ import annotations
+
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -133,7 +135,11 @@ class Plan:
     def get_ready_tasks(self, completed_tasks: set[str]) -> list[Task]:
         ready: list[Task] = []
         for task in self.get_all_tasks():
-            if task.status == TaskStatus.PENDING and task.is_ready(completed_tasks):
+            if (
+                task.status == TaskStatus.PENDING
+                and task.is_leaf()
+                and task.is_ready(completed_tasks)
+            ):
                 ready.append(task)
         return ready
 
@@ -187,6 +193,10 @@ class PlanConfig:
     max_depth: int = 5
     max_subtasks: int = 10
     enable_parallel: bool = True
+    max_parallel_subtasks: int = 3
+    max_total_delegations: int = 20
+    max_branch_delegations: int = 6
+    fail_fast_on_parallel_error: bool = False
     enable_estimation: bool = True
     decomposition_strategy: str = "auto"
     min_task_granularity: str = "medium"
@@ -323,7 +333,7 @@ class PlanManager:
         if not plan:
             return []
 
-        all_tasks = plan.get_all_tasks()
+        all_tasks = [task for task in plan.get_all_tasks() if task.is_leaf()]
         completed: set[str] = set()
         order: list[list[Task]] = []
 

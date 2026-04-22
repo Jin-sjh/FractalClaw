@@ -1,5 +1,7 @@
 """Base Agent module - the core abstraction for all agents in FractalClaw."""
 
+from __future__ import annotations
+
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from enum import Enum
@@ -11,10 +13,12 @@ from fractalclaw.llm import LLMConfig, LLMEngine, LLMResponse
 from fractalclaw.memory import MemoryConfig, MemoryManager, MemoryType
 from fractalclaw.plan import Plan, PlanConfig, PlanManager, Task, TaskPriority, TaskStatus, TaskType
 from fractalclaw.tools import ToolCall, ToolConfig, ToolManager
+from .execution import DelegationGovernance, PlanExecutionEngine
 from .loader import WorkflowConfig, WorkflowStep
 from .tree import AgentTree
 
 if TYPE_CHECKING:
+    from .factory import AgentFactory
     from ..scheduler.agent_workspace import AgentWorkspaceManager
 
 
@@ -48,6 +52,10 @@ class SubAgentRequirement:
     task_description: str
     required_tools: list[str] = field(default_factory=list)
     expected_output: str = ""
+    parallel_safe: bool = False
+    write_scope: list[str] = field(default_factory=list)
+    read_scope: list[str] = field(default_factory=list)
+    delegation_allowed: bool = True
     parameters: dict[str, Any] = field(default_factory=dict)
 
 
@@ -119,12 +127,21 @@ class Agent(ABC):
         
         self._workspace_path: Optional[Path] = None
         self._workspace_manager: Optional["AgentWorkspaceManager"] = None
+        self._factory: Optional["AgentFactory"] = None
 
         self._llm = llm_engine or LLMEngine(config.llm_config or LLMConfig())
         self._memory = memory_manager or MemoryManager(config.memory_config or MemoryConfig())
         self._tools = tool_manager or ToolManager(config.tool_config or ToolConfig())
         self._planner = plan_manager or PlanManager(config.plan_config or PlanConfig())
         self._tree = AgentTree(self)
+        self._delegation_runtime = {
+            "fingerprints": set(),
+            "delegation_count": 0,
+            "branch_delegation_counts": {},
+            "governance_rejections": 0,
+        }
+        self._governance = DelegationGovernance(self._planner.config)
+        self._plan_executor = PlanExecutionEngine(self._planner.config, self._governance)
 
     @property
     def id(self) -> str:
@@ -183,6 +200,9 @@ class Agent(ABC):
 
     def set_system_prompt(self, prompt: str) -> None:
         self._llm.set_system_prompt(prompt)
+
+    def bind_factory(self, factory: "AgentFactory") -> None:
+        self._factory = factory
 
     def register_tool(
         self,
@@ -248,38 +268,56 @@ class Agent(ABC):
         tool_instance = tool_class()
         self._tools.register_tool(tool_instance)
 
+    def register_tool_instance(self, tool: Any) -> None:
+        self._tools.register_tool(tool)
+
     async def _create_subagent(
-        self, 
-        requirement: SubAgentRequirement
+        self,
+        requirement: SubAgentRequirement,
+        depth: int,
     ) -> "Agent":
         """根据需求动态创建子Agent"""
-        config = AgentConfig(
-            name=requirement.agent_name,
-            description=requirement.task_description,
-            role=AgentRole.WORKER,
-            max_iterations=10,
-            enable_planning=False,
-            llm_config=self.config.llm_config,
-            memory_config=self.config.memory_config,
-        )
-        
-        child = BaseAgent(config)
-        
-        for tool_name in requirement.required_tools:
-            handler = self._get_tool_handler(tool_name)
-            child.register_tool(
-                name=tool_name,
-                description=f"Tool: {tool_name}",
-                parameters={},
-                handler=handler
+        if self._factory and self._workspace_manager and self._workspace_path:
+            artifacts = await self._factory.create_runtime_child(self, requirement, depth)
+            child = artifacts.agent
+
+            from ..scheduler.agent_workspace import WorkDocument
+
+            self._workspace_manager.setup_agent_files(
+                child.workspace_path,
+                child,
+                WorkDocument(
+                    task_requirement=requirement.task_description,
+                    acceptance_criteria=requirement.expected_output,
+                    parent_task=self.config.description,
+                ),
+                existing_config_path=artifacts.config_path,
             )
-        
-        if self._workspace_manager:
-            child_workspace = await self._workspace_manager.create_agent_workspace(
-                child, 
-                parent_workspace=self._workspace_path
+        else:
+            config = AgentConfig(
+                name=requirement.agent_name,
+                description=requirement.task_description,
+                role=AgentRole.WORKER,
+                max_iterations=10,
+                enable_planning=False,
+                llm_config=self.config.llm_config,
+                memory_config=self.config.memory_config,
+                tool_config=self.config.tool_config,
+                plan_config=self.config.plan_config,
             )
-            child.set_workspace(child_workspace, self._workspace_manager)
+
+            child = BaseAgent(config)
+            if self._factory:
+                child.bind_factory(self._factory)
+            if self.llm and getattr(self.llm, "_provider", None):
+                child.llm.set_provider(getattr(self.llm, "_provider"))
+
+            if self._workspace_manager:
+                child_workspace = await self._workspace_manager.create_agent_workspace(
+                    child,
+                    parent_workspace=self._workspace_path,
+                )
+                child.set_workspace(child_workspace, self._workspace_manager)
         
         if self._memory.sharing and child._workspace_path:
             await self._memory.sharing.parent_to_child(
@@ -290,8 +328,11 @@ class Agent(ABC):
                 knowledge=self._extract_relevant_knowledge(requirement),
                 constraints=self._extract_constraints(requirement),
             )
+
+        child._delegation_runtime = self._delegation_runtime
         
-        self.add_child(child)
+        if child.get_parent() is None:
+            self.add_child(child)
         
         if self._workspace_manager:
             await self._workspace_manager.log_agent_creation(
@@ -307,7 +348,11 @@ class Agent(ABC):
         """获取工具处理器"""
         tool = self._tools.get_tool(tool_name)
         if tool:
-            return tool.handler
+            async def execute_tool(**kwargs):
+                result = await self._tools.execute(tool_name, kwargs)
+                return result.result if result.result else result.error or ""
+
+            return execute_tool
         
         async def placeholder(**kwargs) -> str:
             return f"Tool '{tool_name}' executed with args: {kwargs}"
@@ -329,10 +374,123 @@ class Agent(ABC):
             reasoning=f"Using predefined workflow '{workflow.name}' with {len(workflow.steps)} steps",
         )
 
+    def _reset_recursive_runtime(self) -> None:
+        self._delegation_runtime = {
+            "fingerprints": set(),
+            "delegation_count": 0,
+            "branch_delegation_counts": {},
+            "governance_rejections": 0,
+        }
+
+    def _planning_output_contract(self) -> str:
+        return """If needs_subagents is true, include "subagent_requirements":
+   [
+     {
+       "agent_name": "name for the subagent",
+       "agent_type": "specialist type (e.g., coder, researcher, analyst)",
+       "task_description": "specific task for this subagent",
+       "required_tools": ["tool1", "tool2"],
+       "expected_output": "what this subagent should produce",
+       "parallel_safe": true | false,
+       "write_scope": ["path/or/resource"],
+       "read_scope": ["path/or/resource"],
+       "delegation_allowed": true | false,
+       "parameters": {}
+     }
+   ]
+
+If needs_subagents is false, include "self_execution_steps":
+   ["step 1 description", "step 2 description", ...]
+
+If needs_subagents is true, also include "subtasks" for the plan:
+   [
+     {
+       "name": "subtask name",
+       "description": "detailed description",
+       "type": "atomic" | "composite",
+       "priority": 1-3,
+       "dependencies": ["dependency_task_id"],
+       "assigned_agent": "agent_name",
+       "parallel_safe": true | false,
+       "write_scope": ["path/or/resource"],
+       "read_scope": ["path/or/resource"],
+       "delegation_allowed": true | false
+     }
+   ]
+
+Use conservative defaults when unsure:
+- parallel_safe=false
+- write_scope=[]
+- read_scope=[]
+- delegation_allowed=true"""
+
+    def _finalize_plan_result(
+        self,
+        plan_result: PlanResult,
+        context: AgentContext,
+    ) -> PlanResult:
+        finalized = self._governance.prepare_plan_result(self, plan_result, context)
+        self._last_plan_result = finalized
+        self._current_plan = finalized.plan if finalized.plan else None
+        return finalized
+
+    def _build_failure_context(self, result: AgentResult) -> str:
+        import json
+
+        failures = []
+        for subtask_result in result.subtask_results:
+            failures.append(
+                {
+                    "task_id": subtask_result.metadata.get("task_id"),
+                    "task_description": subtask_result.metadata.get("task_description"),
+                    "success": subtask_result.success,
+                    "error": subtask_result.error,
+                    "output_summary": subtask_result.output[:500],
+                    "model": subtask_result.metadata.get("selected_model"),
+                    "tools": subtask_result.metadata.get("used_tools", []),
+                    "branch_path": subtask_result.metadata.get("branch_path"),
+                    "depth": subtask_result.metadata.get("depth"),
+                    "governance_reason": subtask_result.metadata.get("governance_reason"),
+                    "parallel_wave": subtask_result.metadata.get("parallel_wave"),
+                }
+            )
+        return json.dumps(failures, ensure_ascii=False, indent=2)
+
+    def _collect_execution_summary(self, subtask_results: list[AgentResult]) -> dict[str, Any]:
+        return {
+            "local_execution_tasks": sum(
+                1 for result in subtask_results
+                if result.metadata.get("execution_mode") == "self"
+            ),
+            "delegated_tasks": sum(
+                1 for result in subtask_results
+                if result.metadata.get("execution_mode") == "delegated"
+            ),
+            "parallel_executed_tasks": sum(
+                1 for result in subtask_results
+                if result.metadata.get("executed_in_parallel")
+            ),
+            "child_failures": sum(1 for result in subtask_results if not result.success),
+            "governance_rejections": self._delegation_runtime["governance_rejections"],
+            "replan_count": self._replan_count,
+        }
+
+    def _log_delegation_event(self, payload: dict[str, Any]) -> None:
+        if not self._workspace_manager or not self._workspace_path:
+            return
+        self._workspace_manager.log_delegation_event(self._workspace_path, payload)
+
     async def _plan(self, context: AgentContext) -> PlanResult:
         """规划阶段：分析任务复杂度，创建执行计划。"""
         if self.config.workflow:
             return self._plan_from_workflow(context)
+        if context.depth >= self._planner.config.max_depth:
+            return PlanResult(
+                complexity=TaskComplexity.SIMPLE,
+                needs_subagents=False,
+                self_execution_steps=[context.task],
+                reasoning="Maximum delegation depth reached; executing locally.",
+            )
 
         old_state = self._state
         self._state = AgentState.PLANNING
@@ -362,40 +520,13 @@ You MUST respond with a JSON structure containing:
 
 3. "reasoning": brief explanation of your analysis
 
-4. If needs_subagents is true, include "subagent_requirements":
-   [
-     {{
-       "agent_name": "name for the subagent",
-       "agent_type": "specialist type (e.g., coder, researcher, analyst)",
-       "task_description": "specific task for this subagent",
-       "required_tools": ["tool1", "tool2"],
-       "expected_output": "what this subagent should produce",
-       "parameters": {{}}
-     }}
-   ]
-
-5. If needs_subagents is false, include "self_execution_steps":
-   ["step 1 description", "step 2 description", ...]
-
-6. If needs_subagents is true, also include "subtasks" for the plan:
-   [
-     {{
-       "name": "subtask name",
-       "description": "detailed description",
-       "type": "atomic" | "composite",
-       "priority": 1-3,
-       "dependencies": ["dependency_task_id"],
-       "assigned_agent": "agent_name"
-     }}
-   ]"""
+4. {self._planning_output_contract()}"""
 
         response = await self._llm.chat(prompt)
         plan_result = await self._parse_plan_response(response.content, context)
-        
-        self._last_plan_result = plan_result
+        plan_result = self._finalize_plan_result(plan_result, context)
 
         if plan_result.plan:
-            self._current_plan = plan_result.plan
             await self._memory.add(
                 f"Plan created: {plan_result.plan.name}",
                 MemoryType.WORKING,
@@ -457,6 +588,10 @@ You MUST respond with a JSON structure containing:
                     task_description=req.get("task_description", ""),
                     required_tools=req.get("required_tools", []),
                     expected_output=req.get("expected_output", ""),
+                    parallel_safe=bool(req.get("parallel_safe", False)),
+                    write_scope=list(req.get("write_scope", []) or []),
+                    read_scope=list(req.get("read_scope", []) or []),
+                    delegation_allowed=bool(req.get("delegation_allowed", True)),
                     parameters=req.get("parameters", {}),
                 )
             )
@@ -482,6 +617,10 @@ You MUST respond with a JSON structure containing:
                     dependencies=td.get("dependencies", []),
                 )
                 subtask.assigned_agent = td.get("assigned_agent")
+                subtask.metadata["parallel_safe"] = bool(td.get("parallel_safe", False))
+                subtask.metadata["write_scope"] = list(td.get("write_scope", []) or [])
+                subtask.metadata["read_scope"] = list(td.get("read_scope", []) or [])
+                subtask.metadata["delegation_allowed"] = bool(td.get("delegation_allowed", True))
                 root_task.subtasks.append(subtask)
 
             plan = Plan(
@@ -495,6 +634,10 @@ You MUST respond with a JSON structure containing:
             if not is_valid:
                 plan = None
 
+        if needs_subagents and (not subagent_requirements or not plan):
+            needs_subagents = False
+            self_execution_steps = self_execution_steps or [context.task]
+
         return PlanResult(
             plan=plan,
             complexity=complexity,
@@ -505,83 +648,193 @@ You MUST respond with a JSON structure containing:
         )
 
     async def _execute_plan(self, context: AgentContext) -> list[AgentResult]:
-        """执行计划：按依赖顺序执行所有子任务。"""
+        """执行计划：按 wave 调度 ready leaf subtasks。"""
         if not self._current_plan:
             return []
-
-        results: list[AgentResult] = []
-        completed: set[str] = set()
-        failed: set[str] = set()
-
-        while True:
-            ready = self._current_plan.get_ready_tasks(completed | failed)
-            if not ready:
-                break
-
-            for task in ready:
-                self._current_plan.update_task_status(task.id, TaskStatus.RUNNING)
-                result = await self._execute_subtask(task, context)
-                results.append(result)
-
-                if result.success:
-                    self._current_plan.update_task_status(task.id, TaskStatus.COMPLETED)
-                    completed.add(task.id)
-                else:
-                    self._current_plan.update_task_status(task.id, TaskStatus.FAILED)
-                    failed.add(task.id)
-
-        return results
+        return await self._plan_executor.execute(self, self._current_plan, context)
 
     async def _execute_subtask(self, task: Task, context: AgentContext) -> AgentResult:
         """执行单个子任务。"""
         old_state = self._state
         self._state = AgentState.DELEGATING
-        
+
         if self._workspace_manager:
             self._workspace_manager.log_state_change(
                 self._workspace_path, self, old_state.value, self._state.value
             )
 
         child = None
+        requirement = None
         if task.assigned_agent:
             child = self._tree.get_child_by_name(task.assigned_agent) or self._tree.get_child(task.assigned_agent)
-        
+
         if not child and task.assigned_agent:
             requirement = self._find_subagent_requirement(task.assigned_agent)
             if requirement:
-                planning_state = self._state
-                self._state = AgentState.PLANNING
-                
-                if self._workspace_manager:
-                    self._workspace_manager.log_state_change(
-                        self._workspace_path, self, planning_state.value, self._state.value
+                decision = self._governance.evaluate_requirement(
+                    self,
+                    requirement,
+                    context,
+                    task,
+                    context.depth + 1,
+                )
+                task.metadata["fingerprint"] = decision.fingerprint
+                task.metadata["branch_path"] = decision.branch_path
+
+                if not decision.allowed:
+                    self._delegation_runtime["governance_rejections"] += 1
+                    task.metadata["delegation_skipped"] = decision.reason_code
+                    task.metadata["governance_reason"] = decision.reason_code
+                    self._log_delegation_event(
+                        {
+                            "event": "delegation_rejected",
+                            "task_id": task.id,
+                            "assigned_agent": task.assigned_agent,
+                            "agent_type": requirement.agent_type,
+                            "fingerprint": decision.fingerprint,
+                            "branch_path": decision.branch_path,
+                            "reason_code": decision.reason_code,
+                            "reason": decision.reason,
+                            "wave_id": task.metadata.get("parallel_wave"),
+                        }
                     )
-                
-                child = await self._create_subagent(requirement)
-                
-                if self._workspace_manager:
-                    self._workspace_manager.log_state_change(
-                        self._workspace_path, self, AgentState.PLANNING.value, AgentState.DELEGATING.value
+                else:
+                    self._governance.reserve_requirement(self, decision)
+                    requirement.parameters = {
+                        **requirement.parameters,
+                        "lineage": {
+                            "parent_agent_id": self._id,
+                            "branch_path": decision.branch_path,
+                            "wave_id": task.metadata.get("parallel_wave"),
+                            "task_id": task.id,
+                        },
+                    }
+
+                    planning_state = self._state
+                    self._state = AgentState.PLANNING
+
+                    if self._workspace_manager:
+                        self._workspace_manager.log_state_change(
+                            self._workspace_path, self, planning_state.value, self._state.value
+                        )
+
+                    try:
+                        child = await self._create_subagent(requirement, context.depth + 1)
+                    except Exception as exc:
+                        self._state = AgentState.THINKING
+                        if self._workspace_manager:
+                            self._workspace_manager.log_state_change(
+                                self._workspace_path,
+                                self,
+                                AgentState.PLANNING.value,
+                                self._state.value,
+                            )
+                        error_text = f"Child creation failed: {exc}"
+                        task.metadata["failure_reason"] = error_text
+                        task.output_data["error"] = error_text
+                        self._log_delegation_event(
+                            {
+                                "event": "delegation_creation_failed",
+                                "task_id": task.id,
+                                "assigned_agent": task.assigned_agent,
+                                "agent_type": requirement.agent_type,
+                                "fingerprint": decision.fingerprint,
+                                "branch_path": decision.branch_path,
+                                "reason_code": "child_creation_failed",
+                                "reason": error_text,
+                                "wave_id": task.metadata.get("parallel_wave"),
+                            }
+                        )
+                        return AgentResult(
+                            success=False,
+                            output="",
+                            iterations=1,
+                            metadata={
+                                "task_id": task.id,
+                                "task_description": task.description,
+                                "execution_mode": "delegated",
+                                "failure_reason": error_text,
+                                "branch_path": decision.branch_path,
+                                "governance_reason": task.metadata.get("governance_reason"),
+                                "depth": context.depth + 1,
+                            },
+                            error=error_text,
+                        )
+
+                    if self._workspace_manager:
+                        self._workspace_manager.log_state_change(
+                            self._workspace_path, self, AgentState.PLANNING.value, AgentState.DELEGATING.value
+                        )
+
+                    self._state = AgentState.DELEGATING
+                    self._log_delegation_event(
+                        {
+                            "event": "delegation_created",
+                            "task_id": task.id,
+                            "assigned_agent": child.name,
+                            "agent_type": requirement.agent_type,
+                            "fingerprint": decision.fingerprint,
+                            "branch_path": decision.branch_path,
+                            "selected_model": child.config.llm_config.model if child.config.llm_config else None,
+                            "wave_id": task.metadata.get("parallel_wave"),
+                        }
                     )
-                
-                self._state = AgentState.DELEGATING
+            else:
+                task.metadata["delegation_skipped"] = "missing_requirement"
+                task.metadata["governance_reason"] = "missing_requirement"
 
         if child:
+            child._delegation_runtime = self._delegation_runtime
             sub_ctx = AgentContext(
                 task=task.description,
                 parent_id=self._id,
                 depth=context.depth + 1,
                 task_id=task.id,
-                metadata={"input": task.input_data},
+                metadata={
+                    "input": task.input_data,
+                    "branch_path": task.metadata.get("branch_path") or context.metadata.get("branch_path", "root"),
+                    "parallel_wave": task.metadata.get("parallel_wave"),
+                },
             )
-            
+
             if self._workspace_manager:
                 self._workspace_manager.log_subtask_delegation(
                     self._workspace_path, self, child, task.description
                 )
-            
-            result = await child.run(sub_ctx)
-            
+
+            try:
+                result = await child.run(sub_ctx)
+            except Exception as exc:
+                result = AgentResult(
+                    success=False,
+                    output=f"Delegated child execution failed for task {task.id}",
+                    iterations=1,
+                    metadata={},
+                    error=str(exc),
+                )
+
+            result.metadata.setdefault("task_id", task.id)
+            result.metadata.setdefault("task_description", task.description)
+            result.metadata.setdefault("execution_mode", "delegated")
+            result.metadata["child_agent_id"] = child.id
+            result.metadata["child_agent_name"] = child.name
+            result.metadata["branch_path"] = task.metadata.get("branch_path")
+            result.metadata["depth"] = context.depth + 1
+            result.metadata["selected_model"] = (
+                child.config.llm_config.model if child.config.llm_config else None
+            )
+            result.metadata["used_tools"] = [tool.name for tool in child.tools.list_tools()]
+            result.metadata["governance_reason"] = task.metadata.get("governance_reason")
+            task.metadata["assigned_agent_id"] = child.id
+            task.metadata["assigned_agent_name"] = child.name
+
+            if not result.success:
+                failure_reason = result.error or "Delegated child execution failed"
+                task.metadata["failure_reason"] = failure_reason
+                task.output_data["error"] = failure_reason
+                task.output_data["child_result_summary"] = result.output[:500]
+                result.metadata["failure_reason"] = failure_reason
+
             if self._memory.sharing and self._workspace_path and child._workspace_path:
                 await self._memory.sharing.child_to_parent(
                     child_agent_id=child._id,
@@ -591,30 +844,72 @@ You MUST respond with a JSON structure containing:
                     result=result.output if result.success else None,
                     errors=result.error,
                 )
-            
+
             self._state = AgentState.THINKING
-            
+
             if self._workspace_manager:
                 self._workspace_manager.log_state_change(
                     self._workspace_path, self, AgentState.DELEGATING.value, self._state.value
                 )
-            
+
+            self._log_delegation_event(
+                {
+                    "event": "delegation_result",
+                    "task_id": task.id,
+                    "assigned_agent": child.name,
+                    "branch_path": task.metadata.get("branch_path"),
+                    "wave_id": task.metadata.get("parallel_wave"),
+                    "selected_model": result.metadata.get("selected_model"),
+                    "success": result.success,
+                    "reason_code": task.metadata.get("governance_reason"),
+                    "error": result.error,
+                }
+            )
             return result
 
         self._state = AgentState.THINKING
-        response = await self._llm.chat(task.description)
-        
+
         if self._workspace_manager:
             self._workspace_manager.log_state_change(
                 self._workspace_path, self, AgentState.DELEGATING.value, self._state.value
             )
 
-        return AgentResult(
-            success=True,
-            output=response.content,
-            iterations=1,
-            metadata={"task_id": task.id},
-        )
+        try:
+            response = await self._llm.chat(task.description)
+            return AgentResult(
+                success=True,
+                output=response.content,
+                iterations=1,
+                metadata={
+                    "task_id": task.id,
+                    "task_description": task.description,
+                    "execution_mode": "self",
+                    "branch_path": task.metadata.get("branch_path"),
+                    "depth": context.depth,
+                    "selected_model": self.config.llm_config.model if self.config.llm_config else None,
+                    "used_tools": [tool.name for tool in self.tools.list_tools()],
+                    "governance_reason": task.metadata.get("governance_reason"),
+                },
+            )
+        except Exception as exc:
+            error_text = str(exc)
+            task.metadata["failure_reason"] = error_text
+            task.output_data["error"] = error_text
+            return AgentResult(
+                success=False,
+                output="",
+                iterations=1,
+                metadata={
+                    "task_id": task.id,
+                    "task_description": task.description,
+                    "execution_mode": "self",
+                    "branch_path": task.metadata.get("branch_path"),
+                    "depth": context.depth,
+                    "failure_reason": error_text,
+                    "governance_reason": task.metadata.get("governance_reason"),
+                },
+                error=error_text,
+            )
 
     def _find_subagent_requirement(self, agent_name: str) -> Optional[SubAgentRequirement]:
         """查找子Agent需求"""
@@ -711,6 +1006,9 @@ Reflect: 1) Was the goal achieved? 2) What could be improved? 3) Any follow-up a
     async def _evaluate_execution(self, result: AgentResult, context: AgentContext) -> tuple[bool, str]:
         """评估执行结果是否达到目标。"""
         if not result.tool_calls and not result.subtask_results:
+            execution_mode = result.metadata.get("execution_mode")
+            if execution_mode in {"self", "workflow"} and result.success and result.output.strip():
+                return True, "Accepted direct execution result without tool calls."
             return False, "No tool calls were made. The task requires actual execution via tools, not just text output."
 
         prompt = f"""Evaluate whether the task execution achieved its goal.
@@ -770,6 +1068,9 @@ Reflection: {reflection}
 
 Evaluation: {evaluation}
 
+Structured Failure Context:
+{self._build_failure_context(previous_result)}
+
 Context:
 - Agent Role: {self.config.role.value}
 - Available Tools: {[t.name for t in self._tools.list_tools()]}
@@ -780,15 +1081,13 @@ You MUST respond with a JSON structure containing:
 1. "complexity": "simple" | "moderate" | "complex"
 2. "needs_subagents": true | false
 3. "reasoning": explanation of what went wrong and how the new plan addresses it
-4. "subagent_requirements" (if needs_subagents is true)
-5. "self_execution_steps" (if needs_subagents is false)
-6. "subtasks" (if needs_subagents is true)"""
+4. {self._planning_output_contract()}"""
 
         response = await self._llm.chat(prompt)
         plan_result = await self._parse_plan_response(response.content, context)
+        plan_result = self._finalize_plan_result(plan_result, context)
 
         if plan_result.plan:
-            self._current_plan = plan_result.plan
             await self._memory.add(
                 f"Replan created: {plan_result.plan.name}",
                 MemoryType.WORKING,
@@ -865,6 +1164,9 @@ class BaseAgent(Agent):
         """执行 Agent 的主循环：规划 -> 执行 -> 评估 -> 反思 -> 重规划（如需要）。"""
         self._iteration = 0
         self._replan_count = 0
+        if context.parent_id is None:
+            self._reset_recursive_runtime()
+        context.metadata.setdefault("branch_path", context.metadata.get("branch_path") or "root")
         tool_history: list[ToolCall] = []
         subtask_results: list[AgentResult] = []
 
@@ -886,6 +1188,8 @@ class BaseAgent(Agent):
             while True:
                 if plan_result.needs_subagents and plan_result.plan:
                     subtask_results = await self._execute_plan(context)
+                    execution_summary = self._collect_execution_summary(subtask_results)
+                    first_failure = next((r for r in subtask_results if not r.success), None)
                     result = AgentResult(
                         success=all(r.success for r in subtask_results),
                         output="\n".join(f"[{r.metadata.get('task_id')}] {r.output}" for r in subtask_results),
@@ -893,11 +1197,18 @@ class BaseAgent(Agent):
                         subtask_results=subtask_results,
                         iterations=self._iteration,
                         plan=plan_result.plan,
+                        metadata={"execution_summary": execution_summary},
+                        error=first_failure.error if first_failure else None,
                     )
+                    if first_failure:
+                        result.metadata["failure_context"] = self._build_failure_context(result)
+                        goal_achieved = False
+                        evaluation = "Child task failure returned to parent; replanning required."
+                    else:
+                        goal_achieved, evaluation = await self._evaluate_execution(result, context)
                 else:
                     result = await self._execute_self(plan_result, context, tool_history)
-
-                goal_achieved, evaluation = await self._evaluate_execution(result, context)
+                    goal_achieved, evaluation = await self._evaluate_execution(result, context)
                 result.metadata["evaluation"] = evaluation
                 result.metadata["goal_achieved"] = goal_achieved
 
