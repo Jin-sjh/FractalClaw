@@ -37,57 +37,27 @@ class RuntimeChildArtifacts:
 class AgentFactory:
     """Unified runtime entry for static, root, and dynamic child agents."""
 
-    BUILTIN_TOOL_ALIASES: dict[str, str] = {
-        "read_file": "read",
-        "write_file": "write",
-        "edit_file": "edit",
-        "execute_code": "bash",
-        "python": "bash",
-        "web_search": "tavily_search",
-        "web_search_skill": "tavily_search",
-        "find": "find_files",
-    }
+    from fractalclaw.tools.definitions import (
+        BUILTIN_TOOL_ALIASES,
+        ROLE_DEFAULT_TOOLS,
+        RUNTIME_TYPE_TOOLS,
+    )
 
+    BUILTIN_TOOL_ALIASES = BUILTIN_TOOL_ALIASES
     ROLE_DEFAULT_TOOLS: dict[AgentRole, list[str]] = {
-        AgentRole.ROOT: [
-            "read",
-            "write",
-            "edit",
-            "search",
-            "find_files",
-            "bash",
-            "tavily_search",
-            "llm_generate",
-        ],
-        AgentRole.COORDINATOR: [
-            "read",
-            "write",
-            "edit",
-            "search",
-            "find_files",
-            "bash",
-            "tavily_search",
-            "llm_generate",
-        ],
-        AgentRole.WORKER: ["read", "write", "edit", "bash", "search", "find_files"],
-        AgentRole.SPECIALIST: ["read", "write", "edit", "bash", "search", "find_files"],
+        AgentRole.ROOT: ROLE_DEFAULT_TOOLS["root"],
+        AgentRole.COORDINATOR: ROLE_DEFAULT_TOOLS["coordinator"],
+        AgentRole.WORKER: ROLE_DEFAULT_TOOLS["worker"],
+        AgentRole.SPECIALIST: ROLE_DEFAULT_TOOLS["specialist"],
     }
-
-    RUNTIME_TYPE_TOOLS: dict[str, list[str]] = {
-        "coder": ["read", "write", "edit", "bash", "search", "find_files"],
-        "code": ["read", "write", "edit", "bash", "search", "find_files"],
-        "developer": ["read", "write", "edit", "bash", "search", "find_files"],
-        "researcher": ["read", "search", "find_files", "tavily_search", "llm_generate"],
-        "research": ["read", "search", "find_files", "tavily_search", "llm_generate"],
-        "analyst": ["read", "search", "find_files", "tavily_search", "llm_generate"],
-        "coordinator": ["read", "write", "edit", "search", "find_files", "bash", "llm_generate"],
-    }
+    RUNTIME_TYPE_TOOLS = RUNTIME_TYPE_TOOLS
 
     def __init__(
         self,
         config_dir: Path = None,
         llm_provider: Any = None,
         workspace_manager: Any = None,
+        model_router: Any = None,
     ):
         self.loader = ConfigLoader(config_dir)
         self._agents: dict[str, Agent] = {}
@@ -96,12 +66,26 @@ class AgentFactory:
         self._workspace_manager = workspace_manager
         self._model_selector = ModelSelector()
         self._smart_model_selector = SmartModelSelector(llm_provider=llm_provider)
+        self._model_router = model_router
+        self._cached_settings: Optional[GlobalSettings] = None
 
         models_path = self.loader.config_dir / "models.yaml"
         if models_path.exists():
             registry = self._model_selector.registry
             if not registry.list_all():
                 registry.load_from_yaml(models_path)
+
+    def _get_settings(self) -> GlobalSettings:
+        """获取缓存的全局配置"""
+        if self._cached_settings is None:
+            self._cached_settings = self.loader.load_settings()
+        return self._cached_settings
+
+    def reload_settings(self) -> GlobalSettings:
+        """强制重新加载全局配置"""
+        self.loader.clear_cache()
+        self._cached_settings = self.loader.load_settings()
+        return self._cached_settings
 
     def register_tool_handler(self, name: str, handler: Callable) -> None:
         """Register a custom tool handler."""
@@ -201,8 +185,9 @@ class AgentFactory:
 
     def _build_llm_config(self, llm_data: dict[str, Any]) -> LLMConfig:
         """Build LLM config from merged YAML data."""
+        from ..llm.model_profile import get_default_model_name
         return LLMConfig(
-            model=llm_data.get("model", "gpt-4"),
+            model=llm_data.get("model", get_default_model_name()),
             temperature=llm_data.get("temperature", 0.7),
             max_tokens=llm_data.get("max_tokens", 4096),
             top_p=llm_data.get("top_p", 1.0),
@@ -212,7 +197,7 @@ class AgentFactory:
 
     def _build_memory_config(self) -> MemoryConfig:
         """Build memory config from global settings."""
-        settings = self.loader.load_settings()
+        settings = self._get_settings()
         memory_settings = settings.memory
         return MemoryConfig(
             max_working_entries=memory_settings.get("max_working_entries", 10),
@@ -225,7 +210,7 @@ class AgentFactory:
 
     def _build_tool_config(self) -> ToolConfig:
         """Build tool config from global settings."""
-        settings = self.loader.load_settings()
+        settings = self._get_settings()
         tool_settings = settings.tools
         return ToolConfig(
             max_concurrent_calls=tool_settings.get("max_concurrent_calls", 5),
@@ -235,7 +220,7 @@ class AgentFactory:
 
     def _build_plan_config(self) -> PlanConfig:
         """Build plan config from global settings."""
-        settings = self.loader.load_settings()
+        settings = self._get_settings()
         planning_settings = settings.planning
         return PlanConfig(
             max_depth=planning_settings.get("max_depth", 5),
@@ -328,14 +313,12 @@ class AgentFactory:
         return AliasedTool()
 
     def _get_tool_handler(self, name: str) -> Callable:
-        """Get a custom tool handler or a placeholder."""
+        from fractalclaw.tools.placeholder import create_placeholder_handler
+
         if name in self._tool_handlers:
             return self._tool_handlers[name]
 
-        async def placeholder(**kwargs) -> str:
-            return f"Tool '{name}' executed with args: {kwargs}"
-
-        return placeholder
+        return create_placeholder_handler(name)
 
     def list_available(self) -> list[str]:
         """List available persisted agent ids."""
@@ -343,7 +326,7 @@ class AgentFactory:
 
     def get_settings(self) -> GlobalSettings:
         """Get global settings."""
-        return self.loader.load_settings()
+        return self._get_settings()
 
     def get_agent(self, agent_id: str) -> Optional[Agent]:
         """Get a previously created agent."""
@@ -367,21 +350,7 @@ class AgentFactory:
     ) -> Agent:
         """Create an agent from a raw config dict."""
         workflow_data = config_dict.get("workflow")
-        workflow = None
-        if workflow_data:
-            steps = [
-                WorkflowStep(
-                    step=s.get("step", i + 1),
-                    name=s.get("name", ""),
-                    description=s.get("description", ""),
-                    action=s.get("action", ""),
-                )
-                for i, s in enumerate(workflow_data.get("steps", []))
-            ]
-            workflow = WorkflowConfig(
-                name=workflow_data.get("name", ""),
-                steps=steps,
-            )
+        workflow = WorkflowConfig.from_dict(workflow_data) if workflow_data else None
 
         config_data = AgentConfigData(
             name=config_dict.get("name", "Agent"),
@@ -396,7 +365,7 @@ class AgentFactory:
             workflow=workflow,
         )
 
-        config_data = self.loader._merge_global_settings(config_data)
+        config_data = self.loader.merge_global_settings(config_data)
         return self._build_agent(config_data, cache_key=cache_key)
 
     async def create_runtime_child(
@@ -507,6 +476,8 @@ class AgentFactory:
         requirement: SubAgentRequirement,
         role: AgentRole,
     ) -> TaskProfile:
+        from fractalclaw.llm.task_classifier import classify_by_keywords, classification_to_analysis_dict
+
         text = " ".join(
             [
                 requirement.agent_type,
@@ -515,39 +486,19 @@ class AgentFactory:
                 " ".join(requirement.required_tools),
             ]
         ).lower()
-        analysis: dict[str, Any] = {
-            "complexity": "medium",
-            "task_type": "general",
-            "importance": "medium",
-            "requires_multimodal": False,
-            "requires_code": False,
-            "requires_reasoning": False,
-            "requires_fast_response": False,
-            "budget_sensitive": True,
-            "estimated_tokens": 1200,
-        }
 
-        if any(token in text for token in ["code", "coder", "debug", "python", "script"]):
-            analysis["task_type"] = "code"
-            analysis["requires_code"] = True
-        elif any(token in text for token in ["research", "analy", "search", "report"]):
-            analysis["task_type"] = "research"
-            analysis["requires_reasoning"] = True
-        elif role == AgentRole.COORDINATOR:
-            analysis["task_type"] = "coordinate"
-            analysis["requires_reasoning"] = True
+        is_coordinator = role == AgentRole.COORDINATOR
+        result = classify_by_keywords(text, is_coordinator=is_coordinator)
 
-        if any(token in text for token in ["simple", "quick", "minor", "small"]):
-            analysis["complexity"] = "simple"
-            analysis["estimated_tokens"] = 800
-        elif any(token in text for token in ["complex", "deep", "multi", "recursive"]):
-            analysis["complexity"] = "complex"
-            analysis["estimated_tokens"] = 3000
+        analysis = classification_to_analysis_dict(result)
+        analysis["budget_sensitive"] = True
+        analysis["estimated_tokens"] = 1200
 
-        if analysis["task_type"] in {"research", "coordinate"}:
-            if analysis["complexity"] == "simple":
+        if result.task_type in {"research", "reasoning"}:
+            if result.complexity == "simple":
                 analysis["complexity"] = "medium"
             analysis["budget_sensitive"] = False
+
         if requirement.expected_output:
             analysis["importance"] = "high"
 
@@ -560,16 +511,33 @@ class AgentFactory:
         task_profile: TaskProfile,
     ) -> tuple[dict[str, Any], Optional[SelectionResult]]:
         parent_llm = parent_agent.config.llm_config or self._build_llm_config({})
-        selection: Optional[SelectionResult]
+        selection: Optional[SelectionResult] = None
+        chosen_model = parent_llm.model
+        chosen_provider = None
+        selection_reason = "inherited_parent_model"
 
-        try:
-            selection = self._smart_model_selector.select(task_profile)
-        except Exception:
-            selection = None
+        task_type = task_profile.task_type.value if hasattr(task_profile.task_type, 'value') else "general"
 
-        chosen_model = selection.model.name if selection else parent_llm.model
+        if self._model_router:
+            routed = self._model_router.route(task_type)
+            if routed:
+                chosen_model = routed.model
+                chosen_provider = routed.provider
+                selection_reason = f"任务类型 {task_type} 路由到 {routed.provider}/{routed.model} (来源: {routed.source})"
+
+        if not chosen_provider:
+            try:
+                selection = self._smart_model_selector.select(task_profile)
+                if selection:
+                    chosen_model = selection.model.name
+                    selection_reason = selection.reason
+            except Exception:
+                selection = None
+
         if role == AgentRole.COORDINATOR:
             chosen_model = parent_llm.model
+            chosen_provider = None
+            selection_reason = "coordinator_uses_parent_model"
 
         temperature = 0.2 if task_profile.requires_code else 0.4 if task_profile.requires_reasoning else 0.6
         llm_data = {
@@ -577,9 +545,10 @@ class AgentFactory:
             "temperature": temperature,
             "max_tokens": min(parent_llm.max_tokens, 4096),
             "stream": False,
+            "selection_reason": selection_reason,
         }
-        if selection:
-            llm_data["selection_reason"] = selection.reason
+        if chosen_provider:
+            llm_data["provider"] = chosen_provider
 
         return llm_data, selection
 

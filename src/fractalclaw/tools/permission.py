@@ -90,6 +90,26 @@ class PermissionConfig:
     auto_approve_patterns: list[str] = field(default_factory=lambda: ["*"])
     deny_patterns: list[str] = field(default_factory=list)
     require_approval_for: list[str] = field(default_factory=lambda: [PermissionType.WRITE.value, PermissionType.BASH.value])
+    command_blacklist: list[str] = field(default_factory=lambda: [
+        "rm -rf /",
+        "rm -rf /*",
+        "sudo rm",
+        "mkfs",
+        "dd if=",
+        "> /dev/sd",
+        "chmod 777 /",
+        "chown root",
+    ])
+    command_whitelist: list[str] = field(default_factory=list)
+    path_whitelist: list[str] = field(default_factory=list)
+    path_blacklist: list[str] = field(default_factory=lambda: [
+        "/etc/passwd",
+        "/etc/shadow",
+        "/root/.ssh",
+        "~/.ssh",
+    ])
+    enable_command_validation: bool = True
+    enable_path_validation: bool = True
 
 
 class PermissionManager:
@@ -264,6 +284,63 @@ class PermissionManager:
             return True
 
         return fnmatch.fnmatch(value, pattern)
+
+    def validate_command(self, command: str) -> tuple[bool, str]:
+        """验证命令是否安全执行
+        
+        Args:
+            command: 要执行的命令
+            
+        Returns:
+            (是否安全, 原因)
+        """
+        if not self.config.enable_command_validation:
+            return True, "Command validation disabled"
+        
+        command_lower = command.lower().strip()
+        
+        for blacklisted in self.config.command_blacklist:
+            if blacklisted.lower() in command_lower:
+                return False, f"Command matches blacklisted pattern: {blacklisted}"
+        
+        if self.config.command_whitelist:
+            for whitelisted in self.config.command_whitelist:
+                if self._match_pattern(command, whitelisted):
+                    return True, "Command matches whitelist"
+            return False, "Command not in whitelist"
+        
+        return True, "Command passed validation"
+
+    def validate_path(self, path: str, permission_type: str = "read") -> tuple[bool, str]:
+        """验证路径是否允许访问
+        
+        Args:
+            path: 要访问的路径
+            permission_type: 权限类型 (read/write)
+            
+        Returns:
+            (是否允许, 原因)
+        """
+        if not self.config.enable_path_validation:
+            return True, "Path validation disabled"
+        
+        import os
+        expanded_path = os.path.expanduser(path)
+        normalized_path = os.path.normpath(expanded_path)
+        
+        for blacklisted in self.config.path_blacklist:
+            blacklisted_expanded = os.path.expanduser(blacklisted)
+            if normalized_path.startswith(blacklisted_expanded) or blacklisted_expanded in normalized_path:
+                return False, f"Path matches blacklisted pattern: {blacklisted}"
+        
+        if self.config.path_whitelist:
+            for whitelisted in self.config.path_whitelist:
+                whitelisted_expanded = os.path.expanduser(whitelisted)
+                if normalized_path.startswith(whitelisted_expanded):
+                    return True, "Path matches whitelist"
+            return False, "Path not in whitelist"
+        
+        return True, "Path passed validation"
 
     def clear_session_permissions(self) -> None:
         """Clear all session-only permissions."""

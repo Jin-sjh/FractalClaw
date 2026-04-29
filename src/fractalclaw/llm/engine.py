@@ -4,12 +4,87 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any, AsyncIterator, Callable, Optional
 
 logger = logging.getLogger(__name__)
+
+
+class LLMErrorType(Enum):
+    """LLM 错误类型枚举"""
+    NETWORK_ERROR = "network_error"
+    TIMEOUT = "timeout"
+    RATE_LIMIT = "rate_limit"
+    AUTH_ERROR = "auth_error"
+    MODEL_ERROR = "model_error"
+    STREAM_ERROR = "stream_error"
+    UNKNOWN = "unknown"
+
+
+class LLMException(Exception):
+    """LLM 异常基类"""
+    def __init__(self, message: str, error_type: LLMErrorType = LLMErrorType.UNKNOWN, retryable: bool = False):
+        super().__init__(message)
+        self.error_type = error_type
+        self.retryable = retryable
+
+
+class CircuitBreaker:
+    """熔断器实现"""
+    
+    STATE_CLOSED = "closed"
+    STATE_OPEN = "open"
+    STATE_HALF_OPEN = "half_open"
+    
+    def __init__(
+        self,
+        failure_threshold: int = 5,
+        recovery_timeout: float = 60.0,
+        half_open_max_calls: int = 3,
+    ):
+        self.failure_threshold = failure_threshold
+        self.recovery_timeout = recovery_timeout
+        self.half_open_max_calls = half_open_max_calls
+        self._state = self.STATE_CLOSED
+        self._failure_count = 0
+        self._last_failure_time: Optional[float] = None
+        self._half_open_calls = 0
+    
+    @property
+    def state(self) -> str:
+        if self._state == self.STATE_OPEN:
+            if self._last_failure_time and (time.time() - self._last_failure_time) >= self.recovery_timeout:
+                self._state = self.STATE_HALF_OPEN
+                self._half_open_calls = 0
+        return self._state
+    
+    def can_execute(self) -> bool:
+        state = self.state
+        if state == self.STATE_CLOSED:
+            return True
+        if state == self.STATE_HALF_OPEN:
+            return self._half_open_calls < self.half_open_max_calls
+        return False
+    
+    def record_success(self) -> None:
+        if self._state == self.STATE_HALF_OPEN:
+            self._state = self.STATE_CLOSED
+            self._failure_count = 0
+            logger.info("Circuit breaker recovered, state changed to CLOSED")
+    
+    def record_failure(self) -> None:
+        self._failure_count += 1
+        self._last_failure_time = time.time()
+        
+        if self._state == self.STATE_HALF_OPEN:
+            self._state = self.STATE_OPEN
+            logger.warning("Circuit breaker opened from HALF_OPEN state")
+        elif self._failure_count >= self.failure_threshold:
+            self._state = self.STATE_OPEN
+            logger.warning(f"Circuit breaker opened after {self._failure_count} failures")
 
 
 class MessageRole(Enum):
@@ -31,7 +106,7 @@ class Message:
 
 @dataclass
 class LLMConfig:
-    model: str = "gpt-4"
+    model: str = ""
     temperature: float = 0.7
     max_tokens: int = 4096
     top_p: float = 1.0
@@ -41,6 +116,7 @@ class LLMConfig:
     timeout: float = 60.0
     max_retries: int = 3
     retry_delay: float = 1.0
+    response_format: Optional[dict[str, Any]] = None
 
 
 @dataclass
@@ -78,16 +154,39 @@ class LLMEngine:
         self,
         config: LLMConfig,
         provider: Optional[LLMProvider] = None,
+        circuit_breaker: Optional[CircuitBreaker] = None,
     ):
         self.config = config
         self._provider = provider
+        self._provider_pool: Optional[Any] = None
         self._context: list[Message] = []
         self._system_prompt: Optional[str] = None
         self._on_token: Optional[Callable[[str], None]] = None
         self._on_tool_call: Optional[Callable[[dict[str, Any]], None]] = None
+        self._circuit_breaker = circuit_breaker or CircuitBreaker()
+        self._on_error: Optional[Callable[[LLMException], None]] = None
 
     def set_provider(self, provider: LLMProvider) -> None:
         self._provider = provider
+
+    def set_provider_pool(self, pool: Any) -> None:
+        """设置 Provider 池，支持多 Provider 路由。"""
+        self._provider_pool = pool
+
+    def _resolve_provider(self, provider_name: Optional[str] = None) -> LLMProvider:
+        """解析当前配置对应的 provider。
+
+        如果指定了 provider_name 且有 provider_pool，则从池中获取对应 provider。
+        否则使用默认 provider。
+        """
+        if provider_name and self._provider_pool:
+            provider = self._provider_pool.get_provider(provider_name)
+            if provider:
+                return provider
+            logger.warning("Provider %s 不可用，使用默认 provider", provider_name)
+        if self._provider:
+            return self._provider
+        raise RuntimeError("LLM provider not set")
 
     def set_system_prompt(self, prompt: str) -> None:
         self._system_prompt = prompt
@@ -96,9 +195,28 @@ class LLMEngine:
         self,
         on_token: Optional[Callable[[str], None]] = None,
         on_tool_call: Optional[Callable[[dict[str, Any]], None]] = None,
+        on_error: Optional[Callable[[LLMException], None]] = None,
     ) -> None:
         self._on_token = on_token
         self._on_tool_call = on_tool_call
+        self._on_error = on_error
+    
+    def _classify_error(self, error: Exception) -> LLMException:
+        """根据异常特征分类错误类型"""
+        error_str = str(error).lower()
+        
+        if "timeout" in error_str or "timed out" in error_str:
+            return LLMException(str(error), LLMErrorType.TIMEOUT, retryable=True)
+        if "429" in error_str or "rate" in error_str or "overload" in error_str:
+            return LLMException(str(error), LLMErrorType.RATE_LIMIT, retryable=True)
+        if "401" in error_str or "403" in error_str or "auth" in error_str or "unauthorized" in error_str:
+            return LLMException(str(error), LLMErrorType.AUTH_ERROR, retryable=False)
+        if "connection" in error_str or "network" in error_str or "dns" in error_str:
+            return LLMException(str(error), LLMErrorType.NETWORK_ERROR, retryable=True)
+        if "model" in error_str or "not found" in error_str:
+            return LLMException(str(error), LLMErrorType.MODEL_ERROR, retryable=False)
+        
+        return LLMException(str(error), LLMErrorType.UNKNOWN, retryable=True)
 
     def add_message(self, message: Message) -> None:
         self._context.append(message)
@@ -149,72 +267,127 @@ class LLMEngine:
         self,
         user_input: str,
         tools: Optional[list[dict[str, Any]]] = None,
+        provider_name: Optional[str] = None,
     ) -> LLMResponse:
-        if not self._provider:
-            raise RuntimeError("LLM provider not set")
+        provider = self._resolve_provider(provider_name)
 
         self.add_user_message(user_input)
         messages = self.get_context()
 
-        if self.config.stream:
-            return await self._stream_and_collect(messages, tools)
+        if tools:
+            return await self._complete(messages, tools, provider)
+        elif self.config.stream:
+            return await self._stream_and_collect(messages, tools, provider)
         else:
-            return await self._complete(messages, tools)
+            return await self._complete(messages, tools, provider)
 
     async def _complete(
         self,
         messages: list[Message],
         tools: Optional[list[dict[str, Any]]] = None,
+        provider: Optional[LLMProvider] = None,
     ) -> LLMResponse:
-        assert self._provider is not None
-        response = await self._provider.complete(messages, self.config, tools)
+        provider = provider or self._provider
+        if not provider:
+            raise RuntimeError("LLM provider not set")
+        
+        if not self._circuit_breaker.can_execute():
+            raise LLMException(
+                "Circuit breaker is open, requests are blocked",
+                LLMErrorType.RATE_LIMIT,
+                retryable=False
+            )
+        
+        try:
+            response = await provider.complete(messages, self.config, tools)
+            self._circuit_breaker.record_success()
 
-        self.add_assistant_message(response.content, response.tool_calls)
+            self.add_assistant_message(response.content, response.tool_calls)
 
-        if response.tool_calls and self._on_tool_call:
-            for tool_call in response.tool_calls:
-                self._on_tool_call(tool_call)
+            if response.tool_calls and self._on_tool_call:
+                for tool_call in response.tool_calls:
+                    self._on_tool_call(tool_call)
 
-        return response
+            return response
+        except Exception as e:
+            self._circuit_breaker.record_failure()
+            llm_error = self._classify_error(e)
+            if self._on_error:
+                self._on_error(llm_error)
+            raise llm_error from e
 
     async def _stream_and_collect(
         self,
         messages: list[Message],
         tools: Optional[list[dict[str, Any]]] = None,
+        provider: Optional[LLMProvider] = None,
     ) -> LLMResponse:
-        assert self._provider is not None
+        provider = provider or self._provider
+        if not provider:
+            raise RuntimeError("LLM provider not set")
+        
+        if not self._circuit_breaker.can_execute():
+            raise LLMException(
+                "Circuit breaker is open, requests are blocked",
+                LLMErrorType.RATE_LIMIT,
+                retryable=False
+            )
+        
         content_chunks: list[str] = []
+        last_exception: Optional[Exception] = None
+        
+        for attempt in range(self.config.max_retries + 1):
+            try:
+                async for chunk in provider.stream(messages, self.config, tools):
+                    content_chunks.append(chunk)
+                    if self._on_token:
+                        self._on_token(chunk)
+                
+                self._circuit_breaker.record_success()
+                full_content = "".join(content_chunks)
+                self.add_assistant_message(full_content)
 
-        async for chunk in self._provider.stream(messages, self.config, tools):
-            content_chunks.append(chunk)
-            if self._on_token:
-                self._on_token(chunk)
-
-        full_content = "".join(content_chunks)
-        self.add_assistant_message(full_content)
-
-        return LLMResponse(
-            content=full_content,
-            model=self.config.model,
-            usage={},
-            finish_reason="stop",
-        )
+                return LLMResponse(
+                    content=full_content,
+                    model=self.config.model,
+                    usage={},
+                    finish_reason="stop",
+                )
+            except Exception as e:
+                last_exception = e
+                llm_error = self._classify_error(e)
+                
+                if self._on_error:
+                    self._on_error(llm_error)
+                
+                if not llm_error.retryable or attempt >= self.config.max_retries:
+                    self._circuit_breaker.record_failure()
+                    raise llm_error from e
+                
+                wait_time = self.config.retry_delay * (2 ** attempt)
+                logger.warning(
+                    f"Stream error ({llm_error.error_type.value}), "
+                    f"retrying in {wait_time}s (attempt {attempt + 1}/{self.config.max_retries})"
+                )
+                await asyncio.sleep(wait_time)
+        
+        self._circuit_breaker.record_failure()
+        raise self._classify_error(last_exception) if last_exception else LLMException("Unknown error")
 
     async def stream(
         self,
         user_input: str,
         tools: Optional[list[dict[str, Any]]] = None,
+        provider_name: Optional[str] = None,
     ) -> AsyncIterator[str]:
-        if not self._provider:
-            raise RuntimeError("LLM provider not set")
+        provider = self._resolve_provider(provider_name)
 
         self.add_user_message(user_input)
         messages = self.get_context()
 
-        assert self._provider is not None
         content_chunks: list[str] = []
 
-        async for chunk in self._provider.stream(messages, self.config, tools):
+        async for chunk in provider.stream(messages, self.config, tools):
             content_chunks.append(chunk)
             if self._on_token:
                 self._on_token(chunk)
@@ -321,6 +494,9 @@ class OpenAICompatibleProvider(LLMProvider):
 
         if tools:
             kwargs["tools"] = tools
+
+        if config.response_format:
+            kwargs["response_format"] = config.response_format
 
         last_exception = None
         for attempt in range(config.max_retries + 1):

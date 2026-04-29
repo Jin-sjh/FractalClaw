@@ -5,7 +5,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Callable, Literal, Optional
 
-from .model_selector import TaskComplexity, TaskImportance, TaskProfile, TaskType
+from .model_selector import TaskProfile, TaskType
+from fractalclaw.common.types import TaskComplexity, TaskDomain, TaskImportance
 
 
 @dataclass

@@ -9,9 +9,10 @@ import uuid
 import yaml
 from dataclasses import dataclass, field, asdict
 from datetime import datetime
-from enum import Enum
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Optional
+
+from fractalclaw.common.types import TaskPriority, TaskStatus
 
 from ..agent import Agent, AgentConfig, AgentContext, AgentResult, BaseAgent, AgentRole
 from ..llm import LLMConfig, LLMEngine
@@ -23,21 +24,6 @@ from .agent_workspace import AgentWorkspaceManager, WorkDocument
 if TYPE_CHECKING:
     from ..agent.factory import AgentFactory
     from ..agent import SubAgentRequirement
-
-
-class TaskStatus(Enum):
-    PENDING = "pending"
-    RUNNING = "running"
-    COMPLETED = "completed"
-    FAILED = "failed"
-    CANCELLED = "cancelled"
-
-
-class TaskPriority(Enum):
-    LOW = 1
-    MEDIUM = 2
-    HIGH = 3
-    URGENT = 4
 
 
 @dataclass
@@ -69,6 +55,25 @@ class TaskProject:
         data["status"] = TaskStatus(data.get("status", "pending"))
         data["priority"] = TaskPriority(data.get("priority", 2))
         return cls(**data)
+
+    @classmethod
+    def from_metadata_dict(cls, data: dict[str, Any], workspace_path: str) -> "TaskProject":
+        return cls(
+            id=data["id"],
+            name=data["name"],
+            description=data["description"],
+            instruction=data.get("instruction", ""),
+            status=TaskStatus(data["status"]),
+            priority=TaskPriority(data["priority"]) if "priority" in data else TaskPriority.MEDIUM,
+            workspace_path=workspace_path,
+            created_at=data["timestamps"].get("created"),
+            updated_at=data["timestamps"].get("updated"),
+            started_at=data["timestamps"].get("started"),
+            completed_at=data["timestamps"].get("completed"),
+            result=data.get("result", {}).get("output"),
+            error=data.get("result", {}).get("error"),
+            metadata=data.get("metadata", {}),
+        )
 
 
 @dataclass
@@ -283,22 +288,7 @@ class Scheduler:
                         with open(metadata_path, "r", encoding="utf-8") as f:
                             data = yaml.safe_load(f)
                         
-                        task = TaskProject(
-                            id=data["id"],
-                            name=data["name"],
-                            description=data["description"],
-                            instruction=data.get("instruction", ""),
-                            status=TaskStatus(data["status"]),
-                            priority=TaskPriority(data["priority"]) if "priority" in data else TaskPriority.MEDIUM,
-                            workspace_path=str(task_folder),
-                            created_at=data["timestamps"].get("created"),
-                            updated_at=data["timestamps"].get("updated"),
-                            started_at=data["timestamps"].get("started"),
-                            completed_at=data["timestamps"].get("completed"),
-                            result=data.get("result", {}).get("output"),
-                            error=data.get("result", {}).get("error"),
-                            metadata=data.get("metadata", {}),
-                        )
+                        task = TaskProject.from_metadata_dict(data, str(task_folder))
                         return task
 
         return None
@@ -342,22 +332,7 @@ class Scheduler:
                         with open(metadata_path, "r", encoding="utf-8") as f:
                             data = yaml.safe_load(f)
                         
-                        task = TaskProject(
-                            id=data["id"],
-                            name=data["name"],
-                            description=data["description"],
-                            instruction=data.get("instruction", ""),
-                            status=TaskStatus(data["status"]),
-                            priority=TaskPriority(data["priority"]) if "priority" in data else TaskPriority.MEDIUM,
-                            workspace_path=str(task_folder),
-                            created_at=data["timestamps"].get("created"),
-                            updated_at=data["timestamps"].get("updated"),
-                            started_at=data["timestamps"].get("started"),
-                            completed_at=data["timestamps"].get("completed"),
-                            result=data.get("result", {}).get("output"),
-                            error=data.get("result", {}).get("error"),
-                            metadata=data.get("metadata", {}),
-                        )
+                        task = TaskProject.from_metadata_dict(data, str(task_folder))
                         if task.id not in self._tasks:
                             self._tasks[task.id] = task
 

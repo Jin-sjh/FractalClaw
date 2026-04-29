@@ -92,7 +92,7 @@ class McpClientManager:
             if self._use_mock:
                 session = MockSession()
                 self._sessions[server_name] = session
-                await self._discover_capabilities_mock(server_name, session)
+                self._discover_capabilities_mock(server_name, session)
             else:
                 await self._connect_real(server_name, config)
 
@@ -107,7 +107,7 @@ class McpClientManager:
         """Connect to a real MCP server."""
         pass
 
-    async def _discover_capabilities_mock(self, server_name: str, session: MockSession) -> None:
+    def _discover_capabilities_mock(self, server_name: str, session: MockSession) -> None:
         """Discover capabilities from mock session."""
         status = self._statuses.get(server_name)
         if status:

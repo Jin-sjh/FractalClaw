@@ -64,6 +64,16 @@ class TavilySearchTool(BaseTool):
         self.api_key = api_key or os.getenv("TAVILY_API_KEY")
         self._client: Any = None
 
+    def is_available(self) -> bool:
+        """Check if Tavily search is available (package installed + API key configured)."""
+        if not self.api_key:
+            return False
+        try:
+            from tavily import TavilyClient
+            return True
+        except ImportError:
+            return False
+
     def _get_client(self) -> Any:
         """Get or create Tavily client lazily."""
         if self._client is None:

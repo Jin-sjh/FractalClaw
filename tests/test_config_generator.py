@@ -145,9 +145,9 @@ class TestAgentConfigGenerator:
         assert result.config_path.exists()
         assert result.config_path.parent == temp_dir
     
-    def test_generate_from_requirement_code(self, generator: AgentConfigGenerator):
+    async def test_generate_from_requirement_code(self, generator: AgentConfigGenerator):
         """测试从需求生成代码Agent"""
-        result = generator.generate_from_requirement(
+        result = await generator.generate_from_requirement(
             "创建一个代码开发Agent，能够编写和调试代码",
             save=False
         )
@@ -158,9 +158,9 @@ class TestAgentConfigGenerator:
         tool_names = [t["name"] for t in result.config_content.get("tools", [])]
         assert "read_file" in tool_names or "execute_code" in tool_names
     
-    def test_generate_from_requirement_research(self, generator: AgentConfigGenerator):
+    async def test_generate_from_requirement_research(self, generator: AgentConfigGenerator):
         """测试从需求生成研究Agent"""
-        result = generator.generate_from_requirement(
+        result = await generator.generate_from_requirement(
             "需要一个研究分析Agent，能够搜索和分析信息",
             save=False
         )
@@ -168,9 +168,9 @@ class TestAgentConfigGenerator:
         assert result.success == True
         assert result.config_content["role"] == "specialist"
     
-    def test_generate_from_requirement_coordinator(self, generator: AgentConfigGenerator):
+    async def test_generate_from_requirement_coordinator(self, generator: AgentConfigGenerator):
         """测试从需求生成协调Agent"""
-        result = generator.generate_from_requirement(
+        result = await generator.generate_from_requirement(
             "创建一个协调管理Agent，负责分配任务",
             save=False
         )

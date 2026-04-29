@@ -7,18 +7,20 @@ from .model_profile import (
     ModelRegistry,
     ModelTag,
     PricingInfo,
+    get_default_model_name,
     get_default_registry,
     set_default_registry,
 )
+from .model_router import ModelRouter, RoutedModel, TASK_TYPE_ENV_KEYS
 from .model_selector import (
     ModelSelector,
     SelectionResult,
     SmartModelSelector,
-    TaskComplexity,
-    TaskImportance,
     TaskProfile,
     TaskType,
 )
+from .provider_pool import ProviderPool, PROVIDER_CONFIG
+from .response_parser import extract_json_from_llm_response
 from .task_analyzer import AnalysisResult, AnalysisCache, TaskAnalyzer
 from .weight_calculator import (
     DEFAULT_WEIGHT_RULES,
@@ -40,15 +42,19 @@ __all__ = [
     "ModelRegistry",
     "ModelCapabilities",
     "PricingInfo",
+    "get_default_model_name",
     "get_default_registry",
     "set_default_registry",
     "ModelSelector",
     "SmartModelSelector",
     "SelectionResult",
-    "TaskComplexity",
-    "TaskImportance",
     "TaskProfile",
     "TaskType",
+    "ModelRouter",
+    "RoutedModel",
+    "TASK_TYPE_ENV_KEYS",
+    "ProviderPool",
+    "PROVIDER_CONFIG",
     "DynamicWeightCalculator",
     "WeightConfig",
     "WeightRule",
@@ -56,4 +62,5 @@ __all__ = [
     "TaskAnalyzer",
     "AnalysisResult",
     "AnalysisCache",
+    "extract_json_from_llm_response",
 ]

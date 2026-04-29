@@ -10,7 +10,6 @@ from .base import (
     BaseAgent,
     PlanResult,
     SubAgentRequirement,
-    TaskComplexity,
 )
 from .tree import AgentTree, TreeStats
 from .loader import ConfigLoader, AgentConfigData, GlobalSettings, WorkflowConfig, WorkflowStep
@@ -26,6 +25,7 @@ from .config_generator import (
     GenerationResult,
 )
 
+from fractalclaw.common.types import TaskComplexity
 from fractalclaw.llm import LLMConfig, LLMEngine, LLMProvider, LLMResponse, Message, OpenAICompatibleProvider
 from fractalclaw.memory import MemoryConfig, MemoryManager, MemoryType
 from fractalclaw.plan import (

@@ -140,6 +140,14 @@ class BaseTool(ABC):
         """
         return []
 
+    def is_available(self) -> bool:
+        """Check if this tool is available for use.
+
+        Override this method to check runtime dependencies (API keys, packages, etc.).
+        Tools that return False will be excluded from the tool list sent to the LLM.
+        """
+        return True
+
 
 class ToolNotFoundError(Exception):
     """Raised when a tool is not found in the registry."""

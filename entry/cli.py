@@ -178,6 +178,34 @@ def config_wizard():
     set_key(str(ENV_PATH), "DEFAULT_MODEL", model_name)
 
     console.print(Panel(
+        "🎯 [bold]任务类型模型配置[/bold]（可选）\n\n"
+        "为不同类型的任务指定不同的模型，系统会自动根据任务类型选择合适的模型。\n"
+        "格式: [dim]provider/model_name[/dim]，如 [dim]deepseek/deepseek-coder[/dim]\n"
+        "直接回车跳过则使用上面的默认模型。",
+        border_style="#82AAFF"
+    ))
+
+    task_type_configs = {
+        "MODEL_REASONING": ("深度推理/规划", "需要强推理能力，如 deepseek/deepseek-chat"),
+        "MODEL_CODE": ("代码/测试", "需要强代码能力，如 deepseek/deepseek-coder"),
+        "MODEL_RESEARCH": ("研究/分析", "需要强分析能力，如 openai/gpt-4"),
+        "MODEL_CHAT": ("对话/问答", "需要快速响应，如 openai/gpt-3.5-turbo"),
+        "MODEL_WRITING": ("写作/创作", "需要强创造力，如 anthropic/claude-3-sonnet"),
+    }
+
+    for env_key, (label, hint) in task_type_configs.items():
+        model_config = questionary.text(
+            f"{label} ({hint}):",
+            style=cyber_style,
+        ).ask()
+
+        if model_config is None:
+            break
+
+        if model_config.strip():
+            set_key(str(ENV_PATH), env_key, model_config.strip())
+
+    console.print(Panel(
         f"配置已保存至 [#82AAFF]{ENV_PATH}[/#82AAFF]\n"
         f"当前默认提供商: [#C792EA]{provider}[/#C792EA] | 模型: [#C792EA]{model_name}[/#C792EA]\n\n"
         f"👉 输入 [bold #89DDFF]fractalclaw run[/bold #89DDFF] 即可启动系统！",

@@ -336,7 +336,7 @@ models:
   - id: moonshot-v1-auto
     name: moonshot-v1-auto
     provider: moonshot
-    api_key_env: "OPENAI_API_KEY"
+    api_key_env: "MOONSHOT_API_KEY"
     tags:
       - text
       - cost_effective
@@ -361,7 +361,7 @@ models:
   - id: moonshot-v1-8k
     name: moonshot-v1-8k
     provider: moonshot
-    api_key_env: "OPENAI_API_KEY"
+    api_key_env: "MOONSHOT_API_KEY"
     tags:
       - text
       - cost_effective
@@ -386,7 +386,7 @@ models:
   - id: moonshot-v1-32k
     name: moonshot-v1-32k
     provider: moonshot
-    api_key_env: "OPENAI_API_KEY"
+    api_key_env: "MOONSHOT_API_KEY"
     tags:
       - text
       - reasoning

@@ -321,3 +321,17 @@ def set_default_registry(registry: ModelRegistry) -> None:
     """设置默认注册表"""
     global _default_registry
     _default_registry = registry
+
+
+def get_default_model_name() -> str:
+    """获取默认模型名称，避免硬编码 gpt-4"""
+    default_model = os.getenv("DEFAULT_MODEL")
+    if default_model:
+        return default_model
+    
+    registry = get_default_registry()
+    configured = registry.list_configured()
+    if configured:
+        return configured[0].name
+    
+    return "gpt-3.5-turbo"

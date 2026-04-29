@@ -1,6 +1,7 @@
 """Plan module for task decomposition and planning."""
 
-from .manager import Plan, PlanConfig, PlanManager, Planner, Task, TaskPriority, TaskStatus, TaskType
+from .manager import Plan, PlanConfig, PlanManager, Planner, Task, TaskType
+from fractalclaw.common.types import TaskPriority, TaskStatus, TaskStructure
 
 __all__ = [
     "Plan",
@@ -10,5 +11,6 @@ __all__ = [
     "Task",
     "TaskPriority",
     "TaskStatus",
+    "TaskStructure",
     "TaskType",
 ]

@@ -64,6 +64,11 @@ Desktop.ini
 *.pyc
 .cache/
 
+
+.trae/
+
+workspace/
+
 # Runtime generated agent configs (keep basic_agents only)
 configs/agents/*.yaml
 !configs/agents/basic_agents/

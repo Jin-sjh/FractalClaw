@@ -156,30 +156,32 @@ class FractalClawApp:
         env_path = self.config_path / ".env"
         load_dotenv(env_path)
 
-        provider_name = os.getenv("DEFAULT_PROVIDER", "openai")
-        model = os.getenv("DEFAULT_MODEL", "gpt-4")
-        api_key = os.getenv("OPENAI_API_KEY")
-        base_url = os.getenv("OPENAI_API_BASE")
+        from fractalclaw.llm.provider_pool import ProviderPool
+        from fractalclaw.llm.model_router import ModelRouter
 
-        if not api_key:
-            raise ValueError("未找到 OPENAI_API_KEY，请先运行 'fractalclaw config' 进行配置")
+        self.provider_pool = ProviderPool()
+        self.model_router = ModelRouter(self.provider_pool)
+
+        provider_name = os.getenv("DEFAULT_PROVIDER", "openai")
+        from fractalclaw.llm.model_profile import get_default_model_name
+        model = get_default_model_name()
+
+        default_provider = self.provider_pool.get_provider(provider_name)
+        if not default_provider:
+            raise ValueError(f"无法创建 Provider: {provider_name}，请检查 API Key 配置")
+
+        self.provider = default_provider
 
         self.llm_config = LLMConfig(
             model=model,
-            api_key=api_key,
-            base_url=base_url,
             stream=False,
-        )
-
-        self.provider = OpenAICompatibleProvider(
-            api_key=api_key,
-            base_url=base_url or "https://api.openai.com/v1",
-            model=model,
         )
 
         self.config_generator = AgentConfigGenerator(
             config_dir=self.config_path / "configs" / "agents",
-            global_settings=self._load_global_settings()
+            global_settings=self._load_global_settings(),
+            llm_provider=self.provider,
+            model_router=self.model_router,
         )
 
         scheduler_config = SchedulerConfig(
@@ -191,6 +193,7 @@ class FractalClawApp:
             config_dir=self.config_path / "configs",
             llm_provider=self.provider,
             workspace_manager=self.workspace_manager,
+            model_router=self.model_router,
         )
         self.scheduler.set_agent_factory(self.agent_factory)
 
@@ -427,7 +430,7 @@ class FractalClawApp:
         Returns:
             tuple[AgentConfig, Optional[GenerationResult]]: (Agent配置, 生成结果)
         """
-        generation_result = self.config_generator.generate_from_requirement(
+        generation_result = await self.config_generator.generate_from_requirement(
             requirement=root_task_text,
             save_path=workspace_path
         )

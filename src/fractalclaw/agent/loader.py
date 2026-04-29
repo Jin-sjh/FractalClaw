@@ -59,6 +59,19 @@ class WorkflowConfig:
     name: str
     steps: list[WorkflowStep] = field(default_factory=list)
 
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> "WorkflowConfig":
+        steps = [
+            WorkflowStep(
+                step=s.get("step", i + 1),
+                name=s.get("name", ""),
+                description=s.get("description", ""),
+                action=s.get("action", ""),
+            )
+            for i, s in enumerate(data.get("steps", []))
+        ]
+        return cls(name=data.get("name", ""), steps=steps)
+
 
 @dataclass
 class AgentConfigData:
@@ -79,30 +92,75 @@ class AgentConfigData:
 class ConfigLoader:
     """配置加载器"""
     
+    MAX_MERGE_DEPTH = 10
+    
     def __init__(self, config_dir: Path = None):
         self.config_dir = Path(config_dir) if config_dir else Path("configs")
         self.settings: Optional[GlobalSettings] = None
         self._cache: dict[str, AgentConfigData] = {}
     
+    @staticmethod
+    def deep_merge(base: dict, update: dict, depth: int = 0) -> dict:
+        """深度合并两个字典，update 中的值会覆盖 base 中的对应值
+        
+        Args:
+            base: 基础字典（默认配置）
+            update: 更新字典（用户配置）
+            depth: 当前递归深度，用于防止无限递归
+            
+        Returns:
+            合并后的字典
+        """
+        if depth > ConfigLoader.MAX_MERGE_DEPTH:
+            return update.copy()
+        
+        result = {}
+        for key in base:
+            result[key] = base[key]
+        
+        for key, value in update.items():
+            if (
+                key in result 
+                and isinstance(result[key], dict) 
+                and isinstance(value, dict)
+                and id(result[key]) != id(value)
+            ):
+                result[key] = ConfigLoader.deep_merge(result[key], value, depth + 1)
+            else:
+                result[key] = value
+        
+        return result
+    
     def load_settings(self) -> GlobalSettings:
-        """加载全局配置"""
+        """加载全局配置，使用深度合并确保用户配置与默认配置完美融合"""
         if self.settings:
             return self.settings
+        
+        default_settings = GlobalSettings()
+        default_dict = {
+            'llm': default_settings.llm,
+            'behavior': default_settings.behavior,
+            'memory': default_settings.memory,
+            'planning': default_settings.planning,
+            'tools': default_settings.tools,
+        }
         
         settings_path = self.config_dir / "settings.yaml"
         if settings_path.exists():
             with open(settings_path, 'r', encoding='utf-8') as f:
-                data = yaml.safe_load(f) or {}
+                user_data = yaml.safe_load(f) or {}
             
-            self.settings = GlobalSettings(
-                llm=data.get('llm', {}),
-                behavior=data.get('behavior', {}),
-                memory=data.get('memory', {}),
-                planning=data.get('planning', {}),
-                tools=data.get('tools', {})
-            )
+            merged = self.deep_merge(default_dict, user_data)
         else:
-            self.settings = GlobalSettings()
+            merged = default_dict
+        
+        self.settings = GlobalSettings(
+            llm=merged.get('llm', {}),
+            behavior=merged.get('behavior', {}),
+            memory=merged.get('memory', {}),
+            planning=merged.get('planning', {}),
+            tools=merged.get('tools', {})
+        )
         
         return self.settings
     
@@ -121,21 +179,7 @@ class ConfigLoader:
             data = yaml.safe_load(f) or {}
         
         workflow_data = data.get('workflow')
-        workflow = None
-        if workflow_data:
-            steps = [
-                WorkflowStep(
-                    step=s.get('step', i + 1),
-                    name=s.get('name', ''),
-                    description=s.get('description', ''),
-                    action=s.get('action', ''),
-                )
-                for i, s in enumerate(workflow_data.get('steps', []))
-            ]
-            workflow = WorkflowConfig(
-                name=workflow_data.get('name', ''),
-                steps=steps,
-            )
+        workflow = WorkflowConfig.from_dict(workflow_data) if workflow_data else None
 
         config = AgentConfigData(
             name=data.get('name', agent_id),
@@ -151,7 +195,7 @@ class ConfigLoader:
             source_path=path
         )
         
-        config = self._merge_global_settings(config)
+        config = self.merge_global_settings(config)
         
         if config.parent:
             config = self._merge_parent(config)
@@ -159,12 +203,19 @@ class ConfigLoader:
         self._cache[agent_id] = config
         return config
     
-    def _merge_global_settings(self, config: AgentConfigData) -> AgentConfigData:
-        """合并全局配置"""
+    def merge_global_settings(self, config: AgentConfigData) -> AgentConfigData:
+        """合并全局配置到 Agent 配置，使用深度合并
+        
+        Args:
+            config: Agent 配置数据
+            
+        Returns:
+            合并后的 Agent 配置数据
+        """
         settings = self.load_settings()
         
-        config.llm = {**settings.llm, **config.llm}
-        config.behavior = {**settings.behavior, **config.behavior}
+        config.llm = self.deep_merge(settings.llm, config.llm)
+        config.behavior = self.deep_merge(settings.behavior, config.behavior)
         
         return config
     
@@ -176,8 +227,8 @@ class ConfigLoader:
             name=config.name,
             description=config.description or parent_config.description,
             role=config.role if config.role != "worker" else parent_config.role,
-            llm={**parent_config.llm, **config.llm},
-            behavior={**parent_config.behavior, **config.behavior},
+            llm=self.deep_merge(parent_config.llm, config.llm),
+            behavior=self.deep_merge(parent_config.behavior, config.behavior),
             system_prompt=config.system_prompt or parent_config.system_prompt,
             tools=(parent_config.tools or []) + (config.tools or []),
             parent="",

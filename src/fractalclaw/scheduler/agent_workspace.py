@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import shutil
+from collections import deque
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
@@ -52,12 +54,68 @@ class LogEntry:
     message: str = ""
 
 
+class LogBuffer:
+    """日志缓冲区，用于批量写入日志以提高性能"""
+    
+    def __init__(
+        self,
+        max_size: int = 100,
+        flush_interval: float = 5.0,
+    ):
+        self.max_size = max_size
+        self.flush_interval = flush_interval
+        self._buffer: deque[dict[str, Any]] = deque()
+        self._lock = asyncio.Lock()
+        self._last_flush: Optional[float] = None
+    
+    def add(self, entry: dict[str, Any]) -> bool:
+        """添加日志条目到缓冲区，返回是否需要刷新"""
+        self._buffer.append(entry)
+        return len(self._buffer) >= self.max_size
+    
+    def should_flush(self) -> bool:
+        """检查是否应该刷新缓冲区"""
+        if len(self._buffer) >= self.max_size:
+            return True
+        if self._last_flush is None:
+            return False
+        return (datetime.now().timestamp() - self._last_flush) >= self.flush_interval
+    
+    def get_and_clear(self) -> list[dict[str, Any]]:
+        """获取并清空缓冲区"""
+        entries = list(self._buffer)
+        self._buffer.clear()
+        self._last_flush = datetime.now().timestamp()
+        return entries
+    
+    def __len__(self) -> int:
+        return len(self._buffer)
+
+
 class AgentWorkspaceManager:
     """Manage task and agent workspace structure and logs."""
 
-    def __init__(self, workspace_root: Path):
+    def __init__(
+        self,
+        workspace_root: Path,
+        log_buffer_size: int = 100,
+        log_flush_interval: float = 5.0,
+    ):
         self.workspace_root = Path(workspace_root)
         self.workspace_root.mkdir(parents=True, exist_ok=True)
+        self._log_buffer = LogBuffer(
+            max_size=log_buffer_size,
+            flush_interval=log_flush_interval,
+        )
+        self._aiofiles_available = self._check_aiofiles()
+    
+    def _check_aiofiles(self) -> bool:
+        """检查 aiofiles 是否可用"""
+        try:
+            import aiofiles
+            return True
+        except ImportError:
+            return False
 
     async def create_agent_workspace(
         self,
@@ -208,6 +266,45 @@ created: {work_doc.created_at}
 
         with open(log_path, "a", encoding="utf-8") as f:
             f.write(json.dumps(log_data, ensure_ascii=False) + "\n")
+
+    async def async_append_log(self, workspace_path: Path, log_entry: LogEntry) -> None:
+        """异步追加日志条目，支持缓冲区批量写入"""
+        log_data = {
+            "timestamp": log_entry.timestamp,
+            "agent_name": log_entry.agent_name,
+            "agent_id": log_entry.agent_id,
+            "tool_name": log_entry.tool_name,
+            "tool_args": log_entry.tool_args,
+            "tool_output": log_entry.tool_output,
+            "agent_state": log_entry.agent_state,
+            "message": log_entry.message,
+        }
+        
+        if self._log_buffer.add(log_data):
+            await self._flush_log_buffer(workspace_path)
+    
+    async def _flush_log_buffer(self, workspace_path: Path) -> None:
+        """刷新日志缓冲区到文件"""
+        if len(self._log_buffer) == 0:
+            return
+        
+        entries = self._log_buffer.get_and_clear()
+        log_path = workspace_path / "execution.log"
+        
+        lines = [json.dumps(entry, ensure_ascii=False) + "\n" for entry in entries]
+        content = "".join(lines)
+        
+        if self._aiofiles_available:
+            import aiofiles
+            async with aiofiles.open(log_path, "a", encoding="utf-8") as f:
+                await f.write(content)
+        else:
+            with open(log_path, "a", encoding="utf-8") as f:
+                f.write(content)
+    
+    async def flush_logs(self, workspace_path: Path) -> None:
+        """手动刷新日志缓冲区"""
+        await self._flush_log_buffer(workspace_path)
 
     def write_summary(self, workspace_path: Path, summary: str) -> None:
         """Write a markdown summary for the workspace."""

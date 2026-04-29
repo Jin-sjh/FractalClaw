@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 import os
 import platform
+from datetime import datetime
 from pathlib import Path
 from typing import Dict, Optional
 
@@ -14,6 +16,8 @@ from fractalclaw.tools.base import BaseTool, ToolParameters, ToolResult
 from fractalclaw.tools.context import ToolContext
 from fractalclaw.tools.output import OutputHandler
 from fractalclaw.tools.permission import PermissionRequest
+
+logger = logging.getLogger(__name__)
 
 
 class BashParameters(ToolParameters):
@@ -51,12 +55,32 @@ class BashTool(BaseTool):
         Returns:
             ToolResult with command output
         """
+        if hasattr(ctx, 'permission_manager') and ctx.permission_manager:
+            is_safe, reason = ctx.permission_manager.validate_command(params.command)
+            if not is_safe:
+                logger.warning(f"Command blocked by security policy: {reason}")
+                return ToolResult.error(
+                    title="bash",
+                    error_message=f"Command blocked by security policy: {reason}",
+                )
+        
+        logger.info(f"Executing bash command: {params.command[:100]}...")
+        
         await ctx.ask_permission(PermissionRequest.for_bash_command(params.command))
 
         timeout = params.timeout or self.DEFAULT_TIMEOUT
         cwd = params.cwd
 
         if cwd:
+            if hasattr(ctx, 'permission_manager') and ctx.permission_manager:
+                is_allowed, reason = ctx.permission_manager.validate_path(cwd, "write")
+                if not is_allowed:
+                    logger.warning(f"Working directory blocked: {reason}")
+                    return ToolResult.error(
+                        title="bash",
+                        error_message=f"Working directory blocked: {reason}",
+                    )
+            
             cwd_path = Path(cwd)
             if not cwd_path.exists():
                 return ToolResult.error(
@@ -86,6 +110,7 @@ class BashTool(BaseTool):
             except asyncio.TimeoutError:
                 process.kill()
                 await process.wait()
+                logger.warning(f"Command timed out after {timeout} seconds: {params.command[:50]}")
                 return ToolResult.error(
                     title="bash",
                     error_message=f"Command timed out after {timeout} seconds",

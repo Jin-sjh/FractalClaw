@@ -117,7 +117,7 @@ TASK_ANALYSIS_PROMPT = """你是一个专业的任务分析助手。请分析以
 class TaskAnalyzer:
     """LLM 任务分析器"""
     
-    DEFAULT_MODEL = "gpt-4o-mini"
+    DEFAULT_MODEL = ""
     
     def __init__(
         self,
@@ -221,20 +221,11 @@ class TaskAnalyzer:
         return task_profile, confidence, reasoning
     
     def _extract_json(self, text: str) -> str:
-        """从文本中提取 JSON"""
-        text = text.strip()
-        if text.startswith("{"):
-            return text
-        
-        match = re.search(r'```(?:json)?\s*(\{.*?\})\s*```', text, re.DOTALL)
-        if match:
-            return match.group(1)
-        
-        start = text.find("{")
-        end = text.rfind("}")
-        if start != -1 and end != -1:
-            return text[start:end+1]
-        
+        from .response_parser import extract_json_from_llm_response
+
+        result = extract_json_from_llm_response(text)
+        if result is not None:
+            return json.dumps(result)
         return text
     
     def _calculate_confidence(self, data: dict[str, Any]) -> float:
@@ -259,40 +250,11 @@ class TaskAnalyzer:
         context: Optional[dict[str, Any]],
         error: str
     ) -> AnalysisResult:
-        """回退到基于规则的分析"""
-        analysis = {
-            "complexity": "medium",
-            "task_type": "general",
-            "importance": "medium",
-            "requires_code": False,
-            "requires_reasoning": False,
-            "requires_fast_response": False,
-            "budget_sensitive": False,
-            "estimated_tokens": 1000
-        }
-        
-        text = user_input.lower()
-        
-        if any(kw in text for kw in ["简单", "快速", "simple", "quick"]):
-            analysis["complexity"] = "simple"
-        elif any(kw in text for kw in ["复杂", "深度", "complex", "comprehensive"]):
-            analysis["complexity"] = "complex"
-        
-        if any(kw in text for kw in ["代码", "编程", "code", "program", "debug"]):
-            analysis["task_type"] = "code"
-            analysis["requires_code"] = True
-        elif any(kw in text for kw in ["研究", "分析", "research", "analyze"]):
-            analysis["task_type"] = "research"
-            analysis["requires_reasoning"] = True
-        elif any(kw in text for kw in ["聊天", "对话", "chat", "talk"]):
-            analysis["task_type"] = "chat"
-            analysis["requires_fast_response"] = True
-        
-        if any(kw in text for kw in ["重要", "关键", "important", "critical"]):
-            analysis["importance"] = "high"
-        elif any(kw in text for kw in ["测试", "test", "尝试"]):
-            analysis["importance"] = "low"
-        
+        from .task_classifier import classify_by_keywords, classification_to_analysis_dict
+
+        result = classify_by_keywords(user_input)
+        analysis = classification_to_analysis_dict(result)
+
         return AnalysisResult(
             task_profile=TaskProfile.from_analysis(analysis),
             confidence=0.5,

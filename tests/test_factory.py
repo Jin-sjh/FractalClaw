@@ -103,7 +103,7 @@ class TestAgentFactory:
             assert child.config.memory_config is not None
 
             child_tool_names = {tool.name for tool in child.tools.list_tools()}
-            assert {"read", "bash"} <= child_tool_names
+            assert {"read", "execute_code"} <= child_tool_names
 
             runtime_config = child.workspace_path / "runtime_agent.yaml"
             copied_config = child.workspace_path / "agent_config.yaml"

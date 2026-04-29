@@ -5,33 +5,12 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from datetime import datetime
-from enum import Enum
 from typing import Any, Optional
 
-
-class TaskStatus(Enum):
-    PENDING = "pending"
-    PLANNED = "planned"
-    READY = "ready"
-    RUNNING = "running"
-    COMPLETED = "completed"
-    FAILED = "failed"
-    CANCELLED = "cancelled"
-    BLOCKED = "blocked"
+from fractalclaw.common.types import TaskPriority, TaskStatus, TaskStructure
 
 
-class TaskPriority(Enum):
-    LOW = 1
-    MEDIUM = 2
-    HIGH = 3
-    CRITICAL = 4
-
-
-class TaskType(Enum):
-    ATOMIC = "atomic"
-    COMPOSITE = "composite"
-    PARALLEL = "parallel"
-    SEQUENTIAL = "sequential"
+TaskType = TaskStructure
 
 
 @dataclass

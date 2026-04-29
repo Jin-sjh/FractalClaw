@@ -134,12 +134,17 @@ class ToolManager:
         return self.registry.list_native_tools()
 
     def get_tool_schemas(self) -> list[dict[str, Any]]:
-        """Get JSON schemas for all tools.
+        """Get JSON schemas for all available tools.
+
+        Only includes tools whose is_available() returns True.
 
         Returns:
             List of tool schemas
         """
-        return self.registry.get_all_schemas()
+        all_schemas = self.registry.get_all_schemas()
+        all_tools = self.registry.list_native_tools()
+        available_names = {t.name for t in all_tools if t.is_available()}
+        return [s for s in all_schemas if s.get("function", {}).get("name") in available_names]
 
     def _generate_call_id(self) -> str:
         """Generate a unique call ID."""
