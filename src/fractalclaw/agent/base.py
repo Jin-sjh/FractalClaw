@@ -12,6 +12,7 @@ import uuid
 from fractalclaw.common.types import TaskComplexity
 from fractalclaw.llm import LLMConfig, LLMEngine, LLMResponse
 from fractalclaw.memory import MemoryConfig, MemoryManager, MemoryType
+from fractalclaw.monitor import EventType, emit_agent_event, emit_event
 from fractalclaw.plan import Plan, PlanConfig, PlanManager, Task, TaskPriority, TaskStatus, TaskType
 from fractalclaw.tools import ToolCall, ToolConfig, ToolManager
 from .execution import DelegationGovernance, PlanExecutionEngine
@@ -157,6 +158,12 @@ class Agent(ABC):
             self._workspace_manager.log_state_change(
                 self._workspace_path, self, old_state.value, self._state.value
             )
+        emit_agent_event(
+            EventType.AGENT_STATE_CHANGED,
+            self,
+            message=f"State changed: {old_state.value} -> {new_state.value}",
+            metadata={"old_state": old_state.value, "new_state": new_state.value},
+        )
 
     @property
     def llm(self) -> LLMEngine:
@@ -333,10 +340,21 @@ class Agent(ABC):
             )
 
         child._delegation_runtime = self._delegation_runtime
-        
+
         if child.get_parent() is None:
             self.add_child(child)
-        
+
+        emit_agent_event(
+            EventType.AGENT_SPAWNED,
+            child,
+            message=f"Created subagent: {child.name} for task: {requirement.task_description[:50]}",
+            metadata={
+                "requirement_agent_type": requirement.agent_type,
+                "requirement_task": requirement.task_description,
+                "parent_agent_id": self._id,
+            },
+        )
+
         if self._workspace_manager:
             await self._workspace_manager.log_agent_creation(
                 parent_workspace=self._workspace_path,
@@ -344,7 +362,7 @@ class Agent(ABC):
                 child_agent=child,
                 requirement=requirement
             )
-        
+
         return child
     
     def _get_tool_handler(self, tool_name: str) -> Callable:
@@ -502,6 +520,13 @@ Use conservative defaults when unsure:
                 self_execution_steps=[context.task],
                 reasoning="Maximum delegation depth reached; executing locally.",
             )
+
+        emit_agent_event(
+            EventType.PLAN_CREATED,
+            self,
+            message="Starting planning phase",
+            metadata={"task": context.task[:100], "depth": context.depth},
+        )
 
         self._transition_state(AgentState.PLANNING)
 
@@ -680,6 +705,19 @@ You MUST respond with a JSON structure containing:
             self._delegation_runtime["governance_rejections"] += 1
             task.metadata["delegation_skipped"] = decision.reason_code
             task.metadata["governance_reason"] = decision.reason_code
+            emit_agent_event(
+                EventType.DELEGATION_REJECTED,
+                self,
+                message=f"Delegation rejected: {decision.reason}",
+                metadata={
+                    "task_id": task.id,
+                    "assigned_agent": task.assigned_agent,
+                    "reason_code": decision.reason_code,
+                    "reason": decision.reason,
+                    "branch_path": decision.branch_path,
+                    "wave_id": task.metadata.get("parallel_wave"),
+                },
+            )
             self._log_delegation_event({
                 "event": "delegation_rejected",
                 "task_id": task.id,
@@ -727,6 +765,19 @@ You MUST respond with a JSON structure containing:
             return None
 
         self._transition_state(AgentState.DELEGATING)
+        emit_agent_event(
+            EventType.DELEGATION_CREATED,
+            self,
+            message=f"Delegation created: {child.name} for task {task.id}",
+            metadata={
+                "task_id": task.id,
+                "child_agent_id": child.id,
+                "child_agent_name": child.name,
+                "agent_type": requirement.agent_type,
+                "branch_path": decision.branch_path,
+                "wave_id": task.metadata.get("parallel_wave"),
+            },
+        )
         self._log_delegation_event({
             "event": "delegation_created",
             "task_id": task.id,
@@ -804,6 +855,21 @@ You MUST respond with a JSON structure containing:
             )
 
         self._transition_state(AgentState.THINKING)
+
+        emit_agent_event(
+            EventType.DELEGATION_RESULT,
+            self,
+            message=f"Delegation result from {child.name}: {'success' if result.success else 'failed'}",
+            metadata={
+                "task_id": task.id,
+                "child_agent_id": child.id,
+                "child_agent_name": child.name,
+                "success": result.success,
+                "error": result.error,
+                "branch_path": task.metadata.get("branch_path"),
+                "wave_id": task.metadata.get("parallel_wave"),
+            },
+        )
 
         self._log_delegation_event({
             "event": "delegation_result",
@@ -895,7 +961,7 @@ You MUST respond with a JSON structure containing:
         import json
 
         self._transition_state(AgentState.EXECUTING)
-        
+
         results: list[ToolCall] = []
 
         for tc in tool_calls:
@@ -909,22 +975,41 @@ You MUST respond with a JSON structure containing:
                 except json.JSONDecodeError:
                     args = {}
 
+            emit_agent_event(
+                EventType.TOOL_CALLED,
+                self,
+                tool_name=name,
+                message=f"Tool called: {name}",
+                metadata={"tool_args": args, "call_id": call_id},
+            )
+
             result = await self._tools.execute(name, args)
             results.append(result)
             self._llm.add_tool_result(call_id, name, str(result.result))
-            
+
+            emit_agent_event(
+                EventType.TOOL_RESULT,
+                self,
+                tool_name=name,
+                message=f"Tool result: {name}",
+                metadata={
+                    "success": result.success if hasattr(result, "success") else True,
+                    "result_preview": str(result.result)[:200] if result.result else "",
+                },
+            )
+
             if self._workspace_manager:
                 self._workspace_manager.log_tool_call(
                     self._workspace_path, self, name, args, result.result
                 )
 
         self._state = AgentState.THINKING
-        
+
         if self._workspace_manager:
             self._workspace_manager.log_state_change(
                 self._workspace_path, self, AgentState.EXECUTING.value, self._state.value
             )
-        
+
         return results
 
     async def _reflect(self, result: AgentResult) -> Optional[str]:
@@ -1001,6 +1086,16 @@ Respond with a JSON:
         evaluation: str,
     ) -> PlanResult:
         """结合反思结果重新规划。"""
+        emit_agent_event(
+            EventType.REPLAN_TRIGGERED,
+            self,
+            message=f"Replanning triggered (attempt {self._replan_count + 1})",
+            metadata={
+                "replan_count": self._replan_count + 1,
+                "previous_success": previous_result.success,
+                "evaluation": evaluation[:200],
+            },
+        )
         self._state = AgentState.PLANNING
 
         prompt = f"""The previous execution plan did not achieve the goal. Create an improved plan.
@@ -1275,7 +1370,8 @@ class BaseAgent(Agent):
                 MemoryType.WORKING,
             )
 
-            self._llm.clear_context()
+            if self._llm.should_compress_context():
+                self._llm.clear_context()
 
             response = await self._llm.chat(step_prompt)
             step_output = response.content

@@ -8,6 +8,7 @@ import time
 import asyncio
 import random
 import re
+import logging
 import yaml
 from pathlib import Path
 from typing import Optional, Any
@@ -20,6 +21,8 @@ from prompt_toolkit.styles import Style
 from prompt_toolkit.application import get_app
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
+
+logger = logging.getLogger(__name__)
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
@@ -262,27 +265,40 @@ class FractalClawApp:
 
     async def process_user_input(self, user_input: str) -> AgentResult:
         """处理用户输入的完整流程"""
+        total_start = time.time()
+
+        t0 = time.time()
         intent_result = await self._analyze_intent_with_confirmation(user_input)
+        logger.info(f"[perf] intent_analysis: {time.time() - t0:.2f}s")
+
         root_task_text = self._build_root_task_text(intent_result["requirements"])
         
         self.spinner.is_spinning = True
         self.spinner.phase = "workspace"
         self.spinner.current_words = ["Creating workspace...", "Setting up files..."]
+        t1 = time.time()
         task = await self._create_workspace(intent_result, root_task_text)
+        logger.info(f"[perf] workspace_creation: {time.time() - t1:.2f}s")
+
         workspace_path = Path(task.workspace_path)
         
         self.spinner.phase = "config"
         self.spinner.current_words = ["Generating config...", "Creating Root Agent..."]
+        t2 = time.time()
         root_agent_config, generation_result = await self._generate_root_agent(
             intent_result,
             workspace_path,
             root_task_text,
         )
+        logger.info(f"[perf] config_generation: {time.time() - t2:.2f}s")
         
         self.spinner.phase = "execute"
         self.spinner.current_words = ["Executing...", "Running Root Agent..."]
+        t3 = time.time()
         result = await self._execute_root_agent(task.id, root_agent_config, workspace_path, intent_result, generation_result)
-        
+        logger.info(f"[perf] root_agent_execution: {time.time() - t3:.2f}s")
+
+        logger.info(f"[perf] total: {time.time() - total_start:.2f}s")
         return result
 
     async def _analyze_intent(self, user_input: str) -> dict:

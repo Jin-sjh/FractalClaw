@@ -6,7 +6,7 @@ llm:
   timeout: 60.0
 
 behavior:
-  max_iterations: 10
+  max_iterations: 3
   enable_planning: true
   enable_reflection: true
   max_replan_attempts: 3

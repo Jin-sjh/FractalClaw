@@ -7,6 +7,7 @@ import hashlib
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Optional
 
+from fractalclaw.monitor import EventType, emit_agent_event
 from fractalclaw.plan import Plan, PlanConfig, Task, TaskPriority, TaskStatus
 
 if TYPE_CHECKING:
@@ -282,6 +283,17 @@ class PlanExecutionEngine:
 
             wave_index += 1
             wave = self.governance.plan_wave(agent, ready, context, wave_index)
+            emit_agent_event(
+                EventType.WAVE_STARTED,
+                agent,
+                message=f"Wave {wave.wave_id} started with {len(wave.parallel_tasks)} parallel, {len(wave.serial_tasks)} serial tasks",
+                metadata={
+                    "wave_id": wave.wave_id,
+                    "parallel_count": len(wave.parallel_tasks),
+                    "serial_count": len(wave.serial_tasks),
+                    "ready_task_ids": [task.id for task in ready],
+                },
+            )
             self._log_wave(
                 agent,
                 plan,
@@ -307,6 +319,19 @@ class PlanExecutionEngine:
                         wave_failed = True
                         break
 
+            emit_agent_event(
+                EventType.WAVE_FINISHED,
+                agent,
+                message=f"Wave {wave.wave_id} finished: {'failed' if wave_failed else 'success'}",
+                metadata={
+                    "wave_id": wave.wave_id,
+                    "failed": wave_failed,
+                    "completed_task_ids": [result.metadata.get("task_id") for result in wave_results],
+                    "failed_task_ids": [
+                        result.metadata.get("task_id") for result in wave_results if not result.success
+                    ],
+                },
+            )
             self._log_wave(
                 agent,
                 plan,

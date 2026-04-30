@@ -1,0 +1,54 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>FractalClaw Monitor</title>
+    <link rel="stylesheet" href="style.css">
+</head>
+<body>
+    <div id="app">
+        <header class="header">
+            <h1>
+                <span class="fractal-symbol">◈</span>
+                FractalClaw Monitor
+                <span class="fractal-symbol">◈</span>
+            </h1>
+            <div class="status-bar">
+                <span id="connection-status" class="status disconnected">Disconnected</span>
+                <span id="task-id">No task</span>
+                <span id="agent-count">Agents: 0</span>
+                <span id="active-count">Active: 0</span>
+                <span id="depth-count">Depth: 0</span>
+            </div>
+        </header>
+
+        <main class="main-content">
+            <div class="tree-panel">
+                <h2>◈ Fractal Tree</h2>
+                <canvas id="fractal-canvas"></canvas>
+                <div class="legend">
+                    <div class="legend-item"><span class="symbol root">◈</span> Root</div>
+                    <div class="legend-item"><span class="symbol coordinator">◇</span> Coordinator</div>
+                    <div class="legend-item"><span class="symbol specialist">◆</span> Specialist</div>
+                    <div class="legend-item"><span class="symbol worker">●</span> Worker</div>
+                    <div class="legend-item"><span class="symbol idle">○</span> Idle</div>
+                    <div class="legend-item"><span class="symbol executing">◉</span> Executing</div>
+                    <div class="legend-item"><span class="symbol error">✕</span> Error</div>
+                </div>
+            </div>
+
+            <div class="events-panel">
+                <h2>◉ Event Stream</h2>
+                <div id="events-container"></div>
+            </div>
+        </main>
+
+        <footer class="footer">
+            <p>FractalClaw Live Monitor | WebSocket Real-time Visualization</p>
+        </footer>
+    </div>
+
+    <script src="fractal_tree.js"></script>
+</body>
+</html>

@@ -320,11 +320,57 @@ def list_agents():
 
 
 @app.command("monitor")
-def run_monitor():
-    """启动监控面板"""
+def run_monitor(
+    server: bool = typer.Option(False, "--server", help="启动 WebSocket 监控服务器"),
+    web: bool = typer.Option(False, "--web", help="启动 Web 可视化界面"),
+    port: int = typer.Option(8765, "--port", "-p", help="WebSocket 服务器端口"),
+    web_port: int = typer.Option(8080, "--web-port", help="Web HTTP 服务器端口"),
+    task: Optional[str] = typer.Option(None, "--task", "-t", help="指定监控的任务 ID"),
+):
+    """启动 FractalClaw 监控面板"""
+    if server:
+        try:
+            from entry.monitor_server import MonitorWebSocketServer
+            ws_server = MonitorWebSocketServer(port=port)
+            if task:
+                ws_server.set_task(task)
+            asyncio.run(ws_server.start())
+        except ImportError as e:
+            console.print(f"[bold red]启动失败：缺少依赖！[/bold red]\n[dim]请安装依赖: pip install websockets\n报错信息: {e}[/dim]")
+        except KeyboardInterrupt:
+            console.print("\n[dim]监控服务器已停止。[/dim]")
+        return
+
+    if web:
+        try:
+            from entry.monitor_web import main as web_main
+            import sys as sys_module
+            original_argv = sys_module.argv
+            sys_module.argv = [
+                "monitor_web",
+                "--port", str(web_port),
+                "--ws-port", str(port),
+            ]
+            if task:
+                sys_module.argv.extend(["--task", task])
+            web_main()
+            sys_module.argv = original_argv
+        except ImportError as e:
+            console.print(f"[bold red]启动失败：缺少依赖！[/bold red]\n[dim]请安装依赖: pip install aiohttp websockets\n报错信息: {e}[/dim]")
+        except KeyboardInterrupt:
+            console.print("\n[dim]Web 监控已停止。[/dim]")
+        return
+
+    # Default: terminal monitor
     try:
         from entry.monitor import main as monitor_main
+        import sys as sys_module
+        original_argv = sys_module.argv
+        sys_module.argv = ["monitor"]
+        if task:
+            sys_module.argv.extend(["--task", task])
         monitor_main()
+        sys_module.argv = original_argv
     except ImportError as e:
         console.print(f"[bold red]启动失败：找不到监视器模块！[/bold red]\n[dim]请确保 monitor.py 和 cli.py 在同一目录下。\n报错信息: {e}[/dim]")
 

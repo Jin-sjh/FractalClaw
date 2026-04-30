@@ -13,6 +13,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, Optional
 
 from fractalclaw.common.types import TaskPriority, TaskStatus
+from fractalclaw.monitor import EventCollector, EventType, FractalEvent, set_event_collector
 
 from ..agent import Agent, AgentConfig, AgentContext, AgentResult, BaseAgent, AgentRole
 from ..llm import LLMConfig, LLMEngine
@@ -407,7 +408,22 @@ class Scheduler:
         if not task:
             raise ValueError(f"Task not found: {task_id}")
 
+        # Initialize event collector for this task
+        event_collector = EventCollector(
+            workspace_root=Path(self.config.workspace_root),
+        )
+        event_collector.set_task(task_id)
+        set_event_collector(event_collector)
+
         self.update_task_status(task_id, TaskStatus.RUNNING)
+
+        task_start_event = FractalEvent(
+            event_type=EventType.TASK_STARTED,
+            task_id=task_id,
+            message=f"Task started: {task.name}",
+            metadata={"instruction": task.instruction[:200]},
+        )
+        event_collector.emit(task_start_event)
 
         config = agent_config or AgentConfig(
             name=f"Agent_{task_id}",
@@ -425,6 +441,22 @@ class Scheduler:
         else:
             agent = BaseAgent(config)
         self._agents[task_id] = agent
+
+        # Emit root agent spawn event
+        event_collector.emit(
+            FractalEvent(
+                event_type=EventType.AGENT_SPAWNED,
+                task_id=task_id,
+                agent_id=agent.id,
+                agent_name=agent.name,
+                agent_role="root",
+                parent_agent_id=None,
+                depth=0,
+                branch_path="root",
+                state="idle",
+                message=f"Root agent spawned: {agent.name}",
+            )
+        )
 
         workspace_path = Path(task.workspace_path)
         agent.set_workspace(workspace_path, self._workspace_manager)
@@ -463,6 +495,14 @@ class Scheduler:
                 self._workspace_manager.update_work_document_result(
                     workspace_path, result.output, True
                 )
+                event_collector.emit(
+                    FractalEvent(
+                        event_type=EventType.TASK_COMPLETED,
+                        task_id=task_id,
+                        message=f"Task completed: {task.name}",
+                        metadata={"output_preview": result.output[:200] if result.output else ""},
+                    )
+                )
             else:
                 self.update_task_status(
                     task_id,
@@ -472,6 +512,14 @@ class Scheduler:
                 self._workspace_manager.update_work_document_result(
                     workspace_path, result.error or "Execution failed", False
                 )
+                event_collector.emit(
+                    FractalEvent(
+                        event_type=EventType.TASK_FAILED,
+                        task_id=task_id,
+                        message=f"Task failed: {task.name}",
+                        metadata={"error": result.error or "Execution failed"},
+                    )
+                )
 
             return result
 
@@ -480,11 +528,20 @@ class Scheduler:
             self._workspace_manager.update_work_document_result(
                 workspace_path, str(e), False
             )
+            event_collector.emit(
+                FractalEvent(
+                    event_type=EventType.TASK_FAILED,
+                    task_id=task_id,
+                    message=f"Task failed with exception: {task.name}",
+                    metadata={"error": str(e)},
+                )
+            )
             raise
 
         finally:
             if task_id in self._agents:
                 del self._agents[task_id]
+            event_collector.stop()
 
     def _save_execution_result(self, task: TaskProject, result: AgentResult) -> None:
         """保存执行结果到项目文件夹。"""

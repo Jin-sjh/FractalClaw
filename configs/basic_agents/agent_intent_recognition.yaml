@@ -62,24 +62,9 @@ workflow:
   name: "intent_recognition_workflow"
   steps:
     - step: 1
-      name: "understand_intent"
-      description: "理解用户意图"
-      action: "从用户话语中推断出用户真正想做什么，识别核心动作、目标对象、具体内容和目标位置"
-
-    - step: 2
-      name: "extract_requirements"
-      description: "提取任务需求"
-      action: "将理解到的意图转化为清晰、具体、可执行的任务需求列表，描述期望达成的最终结果"
-
-    - step: 3
-      name: "derive_acceptance"
-      description: "推导验收结果"
-      action: "根据任务需求生成可量化、可验证的验收标准"
-
-    - step: 4
-      name: "format_output"
-      description: "格式化输出"
-      action: "按标准YAML格式输出任务需求和验收结果"
+      name: "recognize_intent"
+      description: "理解用户意图并输出任务需求和验收结果"
+      action: "从用户话语中推断真实意图，识别核心动作、目标对象、具体内容、目标位置和约束条件，然后提取任务需求并推导验收结果，按标准YAML格式输出"
 
 examples:
   - input: "桌面txt载录长恨歌"
