@@ -8,6 +8,7 @@ from fractalclaw.tools.base import BaseTool
 from fractalclaw.tools.builtin.bash import BashTool, ListDirectoryTool
 from fractalclaw.tools.builtin.read import ReadTool
 from fractalclaw.tools.builtin.write import EditTool, WriteTool
+from fractalclaw.tools.builtin.write_chunked import WriteChunkedTool
 from fractalclaw.tools.builtin.search import FindFilesTool, SearchTool
 from fractalclaw.tools.builtin.llm_generate import LLMGenerateTool
 from fractalclaw.tools.builtin.tavily_search import TavilySearchTool
@@ -22,6 +23,7 @@ __all__ = [
     "ReadTool",
     "WriteTool",
     "EditTool",
+    "WriteChunkedTool",
     "SearchTool",
     "FindFilesTool",
     "LLMGenerateTool",
@@ -34,6 +36,7 @@ _BUILTIN_TOOLS: list[type[BaseTool]] = [
     ReadTool,
     WriteTool,
     EditTool,
+    WriteChunkedTool,
     SearchTool,
     FindFilesTool,
     LLMGenerateTool,

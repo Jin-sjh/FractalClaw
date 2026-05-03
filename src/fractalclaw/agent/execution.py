@@ -143,12 +143,48 @@ class DelegationGovernance:
             and not unique_requirements[0].expected_output.strip()
             and _normalize_text(unique_requirements[0].task_description) == _normalize_text(context.task)
         ):
-            filtered_subtasks[0].metadata["governance_reason"] = "no_benefit_split"
-            plan_result.plan = None
-            plan_result.needs_subagents = False
-            plan_result.self_execution_steps = plan_result.self_execution_steps or [context.task]
+            _should_exempt = self._should_exempt_no_benefit_split(agent, context, plan_result)
+            if not _should_exempt:
+                filtered_subtasks[0].metadata["governance_reason"] = "no_benefit_split"
+                plan_result.plan = None
+                plan_result.needs_subagents = False
+                plan_result.self_execution_steps = plan_result.self_execution_steps or [context.task]
 
         return plan_result
+
+    def _should_exempt_no_benefit_split(
+        self,
+        agent: "Agent",
+        context: "AgentContext",
+        plan_result: "PlanResult",
+    ) -> bool:
+        _delegation_keywords = [
+            "fullstack", "full_stack", "full stack",
+            "app", "application", "system", "project", "platform",
+            "developer", "builder", "creator", "generator",
+            "模块", "module", "系统", "应用", "项目",
+            "前端", "后端", "frontend", "backend", "database",
+            "api", "组件", "component", "服务", "service",
+        ]
+        _task_text = (context.task + " " + (plan_result.reasoning or "")).lower()
+        _has_keyword = any(kw in _task_text for kw in _delegation_keywords)
+
+        _agent_role_name = getattr(getattr(agent, 'config', None), 'role', None)
+        _is_root_or_coordinator = _agent_role_name in ("ROOT", "COORDINATOR") if _agent_role_name else False
+
+        _is_multi_file = getattr(plan_result, 'estimated_files', 0) >= 2
+        _has_modules = getattr(plan_result, 'has_multiple_modules', False)
+        _many_tool_types = len(getattr(plan_result, 'required_tool_types', set())) >= 3
+        _long_task = len(context.task) > 100
+
+        return (
+            _has_keyword
+            or _is_root_or_coordinator
+            or _is_multi_file
+            or _has_modules
+            or _many_tool_types
+            or _long_task
+        )
 
     def evaluate_requirement(
         self,

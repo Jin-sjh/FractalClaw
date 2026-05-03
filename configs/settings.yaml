@@ -1,15 +1,15 @@
 llm:
   temperature: 0.7
-  max_tokens: 4096
+  max_tokens: 8192
   top_p: 1.0
   stream: true
   timeout: 60.0
 
 behavior:
-  max_iterations: 3
+  max_iterations: 5
   enable_planning: true
   enable_reflection: true
-  max_replan_attempts: 3
+  max_replan_attempts: 5
 
 memory:
   max_working_entries: 10
