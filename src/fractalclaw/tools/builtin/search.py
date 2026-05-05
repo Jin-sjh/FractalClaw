@@ -190,6 +190,11 @@ class FindFilesTool(BaseTool):
         results: list[str] = []
         current_depth = 0
 
+        # Determine if the pattern contains path separators or ** wildcards,
+        # which means we need to match against the full relative path rather
+        # than just the filename.
+        _match_full_path = "/" in params.pattern or "\\" in params.pattern or "**" in params.pattern
+
         try:
             for root, dirs, files in os.walk(search_path):
                 rel_root = Path(root).relative_to(search_path)
@@ -200,8 +205,11 @@ class FindFilesTool(BaseTool):
                     continue
 
                 for filename in files:
-                    if fnmatch.fnmatch(filename, params.pattern):
-                        rel_path = rel_root / filename if str(rel_root) != "." else Path(filename)
+                    rel_path = rel_root / filename if str(rel_root) != "." else Path(filename)
+                    # Normalise to forward slashes for consistent glob matching
+                    rel_path_str = rel_path.as_posix()
+                    match_target = rel_path_str if _match_full_path else filename
+                    if fnmatch.fnmatch(match_target, params.pattern):
                         results.append(str(rel_path))
 
             output = "\n".join(results) if results else "No files found"

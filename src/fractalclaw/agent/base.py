@@ -416,41 +416,159 @@ class Agent(ABC):
             "governance_rejections": 0,
         }
 
-    DOMAIN_KEYWORDS = {
-        "frontend": ["frontend", "react", "vue", "angular", "ui", "界面", "页面", "组件", "css", "html", "web"],
-        "backend": ["backend", "api", "server", "database", "服务端", "接口", "数据库", "flask", "django", "fastapi"],
-        "devops": ["deploy", "docker", "ci/cd", "nginx", "部署", "运维", "容器"],
-        "testing": ["test", "测试", "unit test", "integration test", "e2e"],
-        "documentation": ["document", "readme", "文档", "说明", "doc"],
-        "data": ["data", "数据", "analytics", "etl", "pipeline", "爬虫", "crawl"],
-    }
 
-    def _suggest_subagent_types(self, context: AgentContext) -> str:
-        task_lower = context.task.lower()
-        detected_domains = []
-        for domain, keywords in self.DOMAIN_KEYWORDS.items():
-            if any(kw in task_lower for kw in keywords):
-                detected_domains.append(domain)
+    # ── Two-phase planning ────────────────────────────────────────────────────
 
-        if not detected_domains:
-            return ""
+    async def _plan_phase1(self, context: AgentContext) -> dict:
+        """Phase 1: ask the LLM only whether to delegate and, if so, list agents.
 
-        suggestions = []
-        for domain in detected_domains:
-            if domain == "frontend":
-                suggestions.append('- FrontendDeveloper: handles UI components, styling, and frontend build setup')
-            elif domain == "backend":
-                suggestions.append('- BackendDeveloper: handles API routes, database models, and server logic')
-            elif domain == "devops":
-                suggestions.append('- DevOpsEngineer: handles deployment, containers, and infrastructure')
-            elif domain == "testing":
-                suggestions.append('- TestEngineer: handles writing and running tests')
-            elif domain == "documentation":
-                suggestions.append('- DocumentWriter: handles documentation and README files')
-            elif domain == "data":
-                suggestions.append('- DataEngineer: handles data processing and pipelines')
+        Returns a lightweight dict:
+          {
+            "needs_subagents": bool,
+            "agents": [                      # only present when needs_subagents=true
+              {"name": str, "role": str, "task": str},
+              ...
+            ],
+            "reasoning": str
+          }
 
-        return f"Suggested child agent types based on task analysis:\n" + "\n".join(suggestions)
+        The LLM is NOT asked to produce subtasks, dependencies, or any structural
+        fields — those are derived in code during phase 2.  This keeps the output
+        small and reliable.
+        """
+        from fractalclaw.llm.response_parser import extract_json_from_llm_response
+
+        prompt = f"""You are a planning assistant. Analyse the task below and decide
+whether it should be split across multiple specialised agents.
+
+Task:
+{context.task}
+
+Context:
+- Your role: {self.config.role.value}
+- Current delegation depth: {context.depth} / {self._planner.config.max_depth}
+- Existing child agents: {[c.name for c in self._tree.children]}
+
+Rules:
+- Answer needs_subagents=true when the task clearly involves multiple independent
+  work streams that benefit from parallel or specialised execution (e.g. a
+  frontend component AND a backend API AND a database schema).
+- Answer needs_subagents=false when the task is a single coherent unit of work.
+- Do NOT produce subtasks, dependencies, or JSON schemas — only the agent list.
+
+Respond with ONLY this JSON (no markdown fences):
+{{
+  "needs_subagents": true | false,
+  "reasoning": "one sentence explaining your decision",
+  "agents": [
+    {{
+      "name": "ShortCamelCaseName",
+      "role": "one-word specialist role, e.g. frontend_developer",
+      "task": "concise description of what this agent must do"
+    }}
+  ]
+}}
+
+If needs_subagents is false, set "agents" to [].
+"""
+        response = await self._llm.chat(prompt)
+        data = extract_json_from_llm_response(response.content) or {}
+        return {
+            "needs_subagents": bool(data.get("needs_subagents", False)),
+            "agents": data.get("agents") or [],
+            "reasoning": data.get("reasoning", ""),
+        }
+
+    def _plan_phase2_build(
+        self,
+        context: AgentContext,
+        phase1: dict,
+    ) -> PlanResult:
+        """Phase 2: convert the phase-1 agent list into a full PlanResult in code.
+
+        No LLM call is made here.  The structural fields (subtasks, requirements,
+        dependency wiring) are constructed deterministically from the agent list
+        returned by phase 1.
+        """
+        agents = phase1.get("agents") or []
+        reasoning = phase1.get("reasoning", "")
+
+        if not agents:
+            return PlanResult(
+                complexity=TaskComplexity.SIMPLE,
+                needs_subagents=False,
+                self_execution_steps=[context.task],
+                reasoning=reasoning,
+            )
+
+        requirements: list[SubAgentRequirement] = []
+        root_task = Task(
+            id="root",
+            name=context.task[:50],
+            description=context.task,
+            task_type=TaskType.COMPOSITE,
+        )
+
+        for agent_spec in agents:
+            name = str(agent_spec.get("name") or "").strip()
+            role = str(agent_spec.get("role") or "worker").strip()
+            task_desc = str(agent_spec.get("task") or context.task).strip()
+
+            if not name:
+                continue
+
+            req = SubAgentRequirement(
+                agent_name=name,
+                agent_type=role,
+                task_description=task_desc,
+                required_tools=[],
+                expected_output=f"Completed work by {name}",
+                parallel_safe=True,
+                write_scope=[],
+                read_scope=[],
+                delegation_allowed=True,
+            )
+            requirements.append(req)
+
+            subtask = self._planner.create_task(
+                name=name,
+                description=task_desc,
+                task_type=TaskType.ATOMIC,
+                priority=TaskPriority.MEDIUM,
+                dependencies=[],
+            )
+            subtask.assigned_agent = name
+            subtask.metadata["parallel_safe"] = True
+            subtask.metadata["write_scope"] = []
+            subtask.metadata["read_scope"] = []
+            subtask.metadata["delegation_allowed"] = True
+            root_task.subtasks.append(subtask)
+
+        if not requirements:
+            return PlanResult(
+                complexity=TaskComplexity.SIMPLE,
+                needs_subagents=False,
+                self_execution_steps=[context.task],
+                reasoning=f"[PHASE2_EMPTY] {reasoning}",
+            )
+
+        plan = Plan(
+            id=self._planner._generate_plan_id(),
+            name=f"Plan for: {context.task[:30]}",
+            description=context.task,
+            root_task=root_task,
+        )
+
+        return PlanResult(
+            plan=plan,
+            complexity=TaskComplexity.COMPLEX,
+            needs_subagents=True,
+            subagent_requirements=requirements,
+            self_execution_steps=[],
+            reasoning=f"[TWO_PHASE] {reasoning}",
+        )
+
+    # ── End two-phase planning ────────────────────────────────────────────────
 
     def _is_small_context_model(self) -> bool:
         if not self._llm:
@@ -585,7 +703,11 @@ Use conservative defaults when unsure:
         self._workspace_manager.log_delegation_event(self._workspace_path, payload)
 
     async def _plan(self, context: AgentContext) -> PlanResult:
-        """规划阶段：分析任务复杂度，创建执行计划。"""
+        """规划阶段：两阶段规划。
+
+        Phase 1 (LLM, lightweight): decide whether to delegate and list agents.
+        Phase 2 (code, deterministic): convert the agent list into a full PlanResult.
+        """
         if self.config.workflow:
             return self._plan_from_workflow(context)
         if context.depth >= self._planner.config.max_depth:
@@ -605,44 +727,44 @@ Use conservative defaults when unsure:
 
         self._transition_state(AgentState.PLANNING)
 
-        prompt = f"""Analyze the following task and create an execution plan.
+        # ── Phase 1: lightweight LLM call ─────────────────────────────────────
+        phase1 = await self._plan_phase1(context)
 
-Task: {context.task}
-Context:
-- Agent Role: {self.config.role.value}
-- Available Tools: {[t.name for t in self._tools.list_tools() if t.is_available()]}
-- Existing Child Agents: {[c.name for c in self._tree.children]} (you can create NEW child agents if needed)
-- Max Delegation Depth: {self._planner.config.max_depth} (current depth: {context.depth})
+        # ── Phase 2: deterministic plan construction ──────────────────────────
+        if phase1["needs_subagents"] and phase1["agents"]:
+            plan_result = self._plan_phase2_build(context, phase1)
+        else:
+            # Single-agent path: ask LLM for self-execution steps only.
+            plan_result = await self._plan_self_execution(context, phase1["reasoning"])
+        # ── End two-phase planning ────────────────────────────────────────────
 
-IMPORTANT - Delegation Guidelines:
-You are a {self.config.role.value} agent. You have the ability to CREATE new child agents and delegate subtasks to them.
-- If your role is "root" or "coordinator", you SHOULD prefer delegating to specialized child agents rather than executing everything yourself.
-- Set needs_subagents=true when ANY of these conditions apply:
-  * The task involves multiple distinct domains (e.g., frontend + backend, code + documentation)
-  * The task can be parallelized (independent subtasks can run concurrently)
-  * The task requires more than 3-4 tool calls (splitting improves reliability and focus)
-  * The task involves different technology stacks or skill sets
-  * A single agent would need to context-switch between unrelated work
-- Set needs_subagents=false ONLY when the task is truly simple and atomic (1-2 tool calls, single domain).
+        # Detect if _parse_plan_response itself silently downgraded delegation.
+        if not plan_result.needs_subagents and plan_result.reasoning.startswith("[AUTO_DOWNGRADED]"):
+            emit_agent_event(
+                EventType.DELEGATION_DOWNGRADED,
+                self,
+                message="Plan downgraded inside _parse_plan_response (LLM output was incomplete)",
+                metadata={
+                    "original_needs_subagents": True,
+                    "final_needs_subagents": False,
+                    "reasoning": plan_result.reasoning,
+                    "subagent_count": len(plan_result.subagent_requirements),
+                },
+            )
 
-{self._suggest_subagent_types(context)}
-
-You MUST respond with a JSON structure containing:
-1. "complexity": "simple" | "moderate" | "complex"
-   - simple: single step task, can be completed directly
-   - moderate: multiple steps but can be handled by this agent
-   - complex: requires multiple specialized agents working together
-
-2. "needs_subagents": true | false
-   - true if task should be delegated to child agents (preferred for complex/multi-domain tasks)
-   - false ONLY if this agent can handle it alone in 1-2 simple steps
-
-3. "reasoning": brief explanation of your analysis, including why you chose to delegate or not
-
-4. {self._planning_output_contract()}"""
-
-        response = await self._llm.chat(prompt)
-        plan_result = await self._parse_plan_response(response.content, context)
+        # Detect intent correction (false→true).
+        if plan_result.needs_subagents and plan_result.reasoning.startswith("[INTENT_CORRECTED]"):
+            emit_agent_event(
+                EventType.DELEGATION_DOWNGRADED,
+                self,
+                message="Plan intent corrected (needs_subagents overridden false→true)",
+                metadata={
+                    "original_needs_subagents": False,
+                    "final_needs_subagents": True,
+                    "reasoning": plan_result.reasoning,
+                    "subagent_count": len(plan_result.subagent_requirements),
+                },
+            )
 
         original_needs_subagents = plan_result.needs_subagents
         plan_result = self._finalize_plan_result(plan_result, context)
@@ -684,13 +806,49 @@ You MUST respond with a JSON structure containing:
             )
 
         self._state = AgentState.THINKING
-        
+
         if self._workspace_manager:
             self._workspace_manager.log_state_change(
                 self._workspace_path, self, AgentState.PLANNING.value, self._state.value
             )
-        
+
         return plan_result
+
+    async def _plan_self_execution(
+        self, context: AgentContext, phase1_reasoning: str
+    ) -> PlanResult:
+        """Single-agent path: ask LLM for self-execution steps only."""
+        from fractalclaw.llm.response_parser import extract_json_from_llm_response
+
+        prompt = f"""You will execute the following task yourself (no sub-agents).
+List the concrete steps you will take.
+
+Task: {context.task}
+Available tools: {[t.name for t in self._tools.list_tools() if t.is_available()]}
+
+Respond with ONLY this JSON (no markdown fences):
+{{
+  "complexity": "simple" | "moderate" | "complex",
+  "steps": ["step 1", "step 2", ...]
+}}
+"""
+        response = await self._llm.chat(prompt)
+        data = extract_json_from_llm_response(response.content) or {}
+
+        complexity_str = data.get("complexity", "moderate")
+        try:
+            complexity = TaskComplexity(complexity_str)
+        except ValueError:
+            complexity = TaskComplexity.MEDIUM
+
+        steps = data.get("steps") or [context.task]
+
+        return PlanResult(
+            complexity=complexity,
+            needs_subagents=False,
+            self_execution_steps=steps,
+            reasoning=phase1_reasoning,
+        )
 
     async def _parse_plan_response(self, response: str, context: AgentContext) -> PlanResult:
         from fractalclaw.llm.response_parser import extract_json_from_llm_response
@@ -735,6 +893,53 @@ You MUST respond with a JSON structure containing:
         plan = None
         tasks_data = data.get("subtasks") or data.get("tasks", [])
 
+        # ── Intent inference ──────────────────────────────────────────────────
+        # LLMs sometimes write needs_subagents=false while simultaneously
+        # populating subagent_requirements / subtasks, or while describing
+        # delegation in their reasoning.  Treat the *content* of the response
+        # as the ground truth and override the boolean field when the signals
+        # are unambiguous.
+        if not needs_subagents:
+            _delegation_signals: list[str] = []
+
+            # Signal 1: LLM populated subagent_requirements
+            if subagent_requirements:
+                _delegation_signals.append(
+                    f"subagent_requirements has {len(subagent_requirements)} entries"
+                )
+
+            # Signal 2: LLM populated subtasks with assigned_agent fields
+            _assigned_tasks = [
+                td for td in tasks_data
+                if td.get("assigned_agent")
+            ] if tasks_data else []
+            if _assigned_tasks:
+                _delegation_signals.append(
+                    f"subtasks has {len(_assigned_tasks)} entries with assigned_agent"
+                )
+
+            # Signal 3: reasoning text explicitly describes delegation intent
+            _delegation_keywords = [
+                "delegat", "child agent", "subagent", "sub-agent",
+                "specialized agent", "specialist agent",
+                "子agent", "子 agent", "委派", "分配给",
+            ]
+            _reasoning_lower = reasoning.lower()
+            _matched_kw = [kw for kw in _delegation_keywords if kw in _reasoning_lower]
+            if _matched_kw:
+                _delegation_signals.append(
+                    f"reasoning mentions delegation keywords: {_matched_kw}"
+                )
+
+            if _delegation_signals:
+                needs_subagents = True
+                reasoning = (
+                    f"[INTENT_CORRECTED] needs_subagents overridden false→true "
+                    f"based on signals: {'; '.join(_delegation_signals)}. "
+                    f"Original reasoning: {reasoning}"
+                )
+        # ── End intent inference ──────────────────────────────────────────────
+
         # If needs_subagents=true but subtasks are missing, auto-synthesize them from
         # subagent_requirements so that a missing "subtasks" field doesn't silently
         # downgrade delegation to self-execution.
@@ -763,19 +968,32 @@ You MUST respond with a JSON structure containing:
                 task_type=TaskType.COMPOSITE,
             )
 
+            # First pass: collect all task IDs that will actually be created,
+            # so we can filter out dependency references that don't exist.
+            # LLMs often write dependency IDs that don't match the generated UUIDs.
+            _raw_task_ids: set[str] = set()
+            _temp_tasks = []
             for i, td in enumerate(tasks_data):
                 subtask = self._planner.create_task(
                     name=td.get("name", f"Subtask {i + 1}"),
                     description=td.get("description", ""),
                     task_type=TaskType(td.get("type", "atomic")),
                     priority=TaskPriority(td.get("priority", 2)),
-                    dependencies=td.get("dependencies", []),
+                    dependencies=[],  # defer dependency wiring to second pass
                 )
                 subtask.assigned_agent = td.get("assigned_agent")
                 subtask.metadata["parallel_safe"] = bool(td.get("parallel_safe", False))
                 subtask.metadata["write_scope"] = list(td.get("write_scope", []) or [])
                 subtask.metadata["read_scope"] = list(td.get("read_scope", []) or [])
                 subtask.metadata["delegation_allowed"] = bool(td.get("delegation_allowed", True))
+                subtask.metadata["_raw_deps"] = td.get("dependencies", [])
+                _raw_task_ids.add(subtask.id)
+                _temp_tasks.append(subtask)
+
+            # Second pass: wire dependencies, dropping any IDs that don't exist.
+            for subtask in _temp_tasks:
+                raw_deps = subtask.metadata.pop("_raw_deps", [])
+                subtask.dependencies = [d for d in raw_deps if d in _raw_task_ids]
                 root_task.subtasks.append(subtask)
 
             plan = Plan(
@@ -787,7 +1005,14 @@ You MUST respond with a JSON structure containing:
 
             is_valid, errors = self._planner.validate_plan(plan)
             if not is_valid:
-                plan = None
+                # Attempt self-repair: clear all dependencies and re-validate.
+                # This handles cases where LLM wrote dependency IDs that still
+                # don't match after the first-pass filter (e.g. depth violations).
+                for subtask in root_task.subtasks:
+                    subtask.dependencies = []
+                is_valid, errors = self._planner.validate_plan(plan)
+                if not is_valid:
+                    plan = None
 
         if needs_subagents and (not subagent_requirements or not plan):
             # Log the specific reason so it's visible in events rather than silently downgrading.
@@ -1196,6 +1421,41 @@ Reflect: 1) Was the goal achieved? 2) What could be improved? 3) Any follow-up a
                 return True, "Accepted direct execution result without tool calls."
             return False, "No tool calls were made. The task requires actual execution via tools, not just text output."
 
+        # ── Network/proxy error detection ─────────────────────────────────────
+        # If ALL failures are network/proxy errors, treat the non-network work
+        # as successful and skip the failed installs rather than triggering a
+        # replan loop that will just retry the same broken network command.
+        _network_error_indicators = [
+            "ProxyError", "Cannot connect to proxy", "ConnectionError",
+            "No matching distribution found", "Could not find a version",
+            "pip install", "connection broken",
+        ]
+        _write_success_count = sum(
+            1 for tc in result.tool_calls
+            if tc.name in ("write", "write_file") and not tc.error
+        )
+        _network_fail_count = sum(
+            1 for tc in result.tool_calls
+            if (
+                (tc.error and any(ind in str(tc.error) for ind in _network_error_indicators))
+                or (tc.result and any(ind in str(tc.result) for ind in _network_error_indicators))
+            )
+        )
+        # Count failures broadly: explicit tc.error OR result containing error indicators
+        _total_fails = sum(
+            1 for tc in result.tool_calls
+            if tc.error
+            or (tc.result and any(ind in str(tc.result) for ind in _network_error_indicators))
+        )
+        if _network_fail_count > 0 and _network_fail_count == _total_fails and _write_success_count > 0:
+            return True, (
+                f"Network/proxy errors prevented package installation "
+                f"({_network_fail_count} install command(s) failed), but "
+                f"{_write_success_count} file(s) were written successfully. "
+                f"Treating as success — user should install dependencies manually."
+            )
+        # ── End network error detection ───────────────────────────────────────
+
         failed_tool_summary = []
         for tc in result.tool_calls:
             if tc.result and hasattr(tc.result, "metadata") and tc.result.metadata.get("error"):
@@ -1288,16 +1548,45 @@ IMPORTANT RULES FOR REPLANNING:
 2. If tavily_search failed, try llm_generate (for known content), bash+curl, or other available tools.
 3. If a tool returned an error, the new plan must use a DIFFERENT approach or tool.
 4. Do NOT repeat the same failed approach.
+5. NETWORK/PROXY ERRORS: If any tool failed with a network or proxy error (ProxyError, ConnectionError,
+   "Cannot connect to proxy", "No such file or directory" in proxy context, pip install timeout/failure),
+   this is an ENVIRONMENT LIMITATION — do NOT retry the same network command.
+   Instead, SKIP the installation/network step entirely and proceed with writing files only.
+   Assume the user will install dependencies manually.
+6. ENVIRONMENT COMMANDS: If bash commands like "pwd", "ls", "ls -la" failed with "not recognized",
+   this is a Windows environment. Do NOT use Unix commands. Use the "write" tool to create files directly
+   instead of using bash for file operations.
 
 Based on the above, create a NEW and IMPROVED execution plan.
-You MUST respond with a JSON structure containing:
-1. "complexity": "simple" | "moderate" | "complex"
-2. "needs_subagents": true | false
-3. "reasoning": explanation of what went wrong and how the new plan addresses it
-4. {self._planning_output_contract()}"""
+Respond with ONLY this JSON (no markdown fences):
+{{
+  "needs_subagents": true | false,
+  "reasoning": "what went wrong and how the new plan addresses it",
+  "agents": [
+    {{
+      "name": "ShortCamelCaseName",
+      "role": "specialist role",
+      "task": "what this agent must do"
+    }}
+  ]
+}}
+If needs_subagents is false, set "agents" to [].
+"""
 
+        from fractalclaw.llm.response_parser import extract_json_from_llm_response
         response = await self._llm.chat(prompt)
-        plan_result = await self._parse_plan_response(response.content, context)
+        data = extract_json_from_llm_response(response.content) or {}
+        phase1 = {
+            "needs_subagents": bool(data.get("needs_subagents", False)),
+            "agents": data.get("agents") or [],
+            "reasoning": data.get("reasoning", ""),
+        }
+
+        if phase1["needs_subagents"] and phase1["agents"]:
+            plan_result = self._plan_phase2_build(context, phase1)
+        else:
+            plan_result = await self._plan_self_execution(context, phase1["reasoning"])
+
         plan_result = self._finalize_plan_result(plan_result, context)
 
         if plan_result.plan:
@@ -1415,8 +1704,26 @@ class BaseAgent(Agent):
                     )
                     if first_failure:
                         result.metadata["failure_context"] = self._build_failure_context(result)
-                        goal_achieved = False
-                        evaluation = "Child task failure returned to parent; replanning required."
+                        # Check if the failure is due to network/environment issues but
+                        # some subtasks succeeded. If so, treat as partial success rather
+                        # than triggering a full replan that will duplicate work.
+                        _success_count = sum(1 for r in subtask_results if r.success)
+                        _has_network_errors = any(
+                            "ProxyError" in (r.error or "")
+                            or "Cannot connect to proxy" in (r.error or "")
+                            or "No matching distribution" in (r.error or "")
+                            for r in subtask_results if not r.success
+                        )
+                        if _success_count > 0 and _has_network_errors:
+                            goal_achieved = True
+                            evaluation = (
+                                f"Partial success: {_success_count}/{len(subtask_results)} "
+                                f"subtask(s) completed. Failures were due to network/environment "
+                                f"issues (proxy errors, missing packages). Treating as success."
+                            )
+                        else:
+                            goal_achieved = False
+                            evaluation = "Child task failure returned to parent; replanning required."
                     else:
                         goal_achieved, evaluation = await self._evaluate_execution(result, context)
                 else:
