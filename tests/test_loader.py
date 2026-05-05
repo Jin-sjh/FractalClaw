@@ -25,8 +25,9 @@ class TestConfigLoader:
         
         assert isinstance(settings, GlobalSettings)
         assert settings.llm.get('temperature') == 0.7
-        assert settings.behavior.get('max_iterations') == 10
+        assert settings.behavior.get('max_iterations') == 5
         assert settings.behavior.get('enable_planning') == True
+        assert settings.behavior.get('max_replan_attempts') == 5
     
     def test_load_agent(self, loader: ConfigLoader):
         """测试加载Agent配置"""

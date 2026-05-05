@@ -49,9 +49,10 @@ class WriteTool(BaseTool):
         Returns:
             ToolResult with write status
         """
-        await ctx.ask_permission(PermissionRequest.for_file_write(params.file_path))
+        resolved_path = ctx.resolve_path(params.file_path)
+        await ctx.ask_permission(PermissionRequest.for_file_write(resolved_path))
 
-        path = Path(params.file_path)
+        path = Path(resolved_path)
 
         if params.create_dirs:
             path.parent.mkdir(parents=True, exist_ok=True)
@@ -66,7 +67,7 @@ class WriteTool(BaseTool):
 
             return ToolResult(
                 title=path.name,
-                output=f"Successfully wrote {len(params.content)} characters to {params.file_path}",
+                output=f"Successfully wrote {len(params.content)} characters to {resolved_path}",
                 metadata={
                     "file_path": str(path.absolute()),
                     "bytes_written": len(params.content.encode("utf-8")),
@@ -78,7 +79,7 @@ class WriteTool(BaseTool):
         except PermissionError:
             return ToolResult.error(
                 title=path.name,
-                error_message=f"Permission denied: {params.file_path}",
+                error_message=f"Permission denied: {resolved_path}",
             )
         except Exception as e:
             return ToolResult.error(
@@ -121,14 +122,15 @@ class EditTool(BaseTool):
         Returns:
             ToolResult with edit status
         """
-        await ctx.ask_permission(PermissionRequest.for_file_write(params.file_path))
+        resolved_path = ctx.resolve_path(params.file_path)
+        await ctx.ask_permission(PermissionRequest.for_file_write(resolved_path))
 
-        path = Path(params.file_path)
+        path = Path(resolved_path)
 
         if not path.exists():
             return ToolResult.error(
                 title=path.name,
-                error_message=f"File not found: {params.file_path}",
+                error_message=f"File not found: {resolved_path}",
             )
 
         try:
@@ -162,7 +164,7 @@ class EditTool(BaseTool):
 
         return ToolResult(
             title=path.name,
-            output=f"Successfully replaced {count} occurrence(s) in {params.file_path}",
+            output=f"Successfully replaced {count} occurrence(s) in {resolved_path}",
             metadata={
                 "file_path": str(path.absolute()),
                 "replacements": count,

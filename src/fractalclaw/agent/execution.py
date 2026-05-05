@@ -134,6 +134,11 @@ class DelegationGovernance:
             plan_result.plan = None
             plan_result.needs_subagents = False
             plan_result.self_execution_steps = plan_result.self_execution_steps or [context.task]
+            plan_result.reasoning = (
+                f"[DELEGATION_DOWNGRADED] {plan_result.reasoning or ''} "
+                f"Reason: no valid subtasks or requirements after governance filtering "
+                f"(filtered_subtasks={len(filtered_subtasks)}, unique_requirements={len(unique_requirements)})"
+            ).strip()
             return plan_result
 
         if (
@@ -149,6 +154,11 @@ class DelegationGovernance:
                 plan_result.plan = None
                 plan_result.needs_subagents = False
                 plan_result.self_execution_steps = plan_result.self_execution_steps or [context.task]
+                plan_result.reasoning = (
+                    f"[DELEGATION_DOWNGRADED] {plan_result.reasoning or ''} "
+                    f"Reason: no_benefit_split - single subagent with no tools/expected_output "
+                    f"that duplicates the parent task"
+                ).strip()
 
         return plan_result
 

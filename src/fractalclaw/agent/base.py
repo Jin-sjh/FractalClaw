@@ -195,6 +195,20 @@ class Agent(ABC):
         self._workspace_path = path
         self._workspace_manager = manager
         self._memory.bind_agent(self._id, self.config.name, path)
+        self._tools._workspace_path = str(path)
+
+        workspace_hint = (
+            f"\n\n## 工作空间\n"
+            f"你的工作空间目录为: {path}\n"
+            f"所有文件操作（读取、写入、搜索等）应使用相对于此工作空间的路径。\n"
+            f"例如：写入文件时使用 'backend/main.py' 而非绝对路径，"
+            f"系统会自动将其解析为 {path / 'backend/main.py'}。\n"
+            f"执行命令时，默认工作目录也是此工作空间。"
+        )
+        if self.config.system_prompt:
+            self.config.system_prompt += workspace_hint
+        else:
+            self.config.system_prompt = workspace_hint
 
     def add_child(self, agent: "Agent") -> None:
         self._tree.add_child(agent)
@@ -402,11 +416,72 @@ class Agent(ABC):
             "governance_rejections": 0,
         }
 
+    DOMAIN_KEYWORDS = {
+        "frontend": ["frontend", "react", "vue", "angular", "ui", "界面", "页面", "组件", "css", "html", "web"],
+        "backend": ["backend", "api", "server", "database", "服务端", "接口", "数据库", "flask", "django", "fastapi"],
+        "devops": ["deploy", "docker", "ci/cd", "nginx", "部署", "运维", "容器"],
+        "testing": ["test", "测试", "unit test", "integration test", "e2e"],
+        "documentation": ["document", "readme", "文档", "说明", "doc"],
+        "data": ["data", "数据", "analytics", "etl", "pipeline", "爬虫", "crawl"],
+    }
+
+    def _suggest_subagent_types(self, context: AgentContext) -> str:
+        task_lower = context.task.lower()
+        detected_domains = []
+        for domain, keywords in self.DOMAIN_KEYWORDS.items():
+            if any(kw in task_lower for kw in keywords):
+                detected_domains.append(domain)
+
+        if not detected_domains:
+            return ""
+
+        suggestions = []
+        for domain in detected_domains:
+            if domain == "frontend":
+                suggestions.append('- FrontendDeveloper: handles UI components, styling, and frontend build setup')
+            elif domain == "backend":
+                suggestions.append('- BackendDeveloper: handles API routes, database models, and server logic')
+            elif domain == "devops":
+                suggestions.append('- DevOpsEngineer: handles deployment, containers, and infrastructure')
+            elif domain == "testing":
+                suggestions.append('- TestEngineer: handles writing and running tests')
+            elif domain == "documentation":
+                suggestions.append('- DocumentWriter: handles documentation and README files')
+            elif domain == "data":
+                suggestions.append('- DataEngineer: handles data processing and pipelines')
+
+        return f"Suggested child agent types based on task analysis:\n" + "\n".join(suggestions)
+
+    def _is_small_context_model(self) -> bool:
+        if not self._llm:
+            return False
+        ctx = getattr(self._llm, "context_window", None) or getattr(self._llm, "max_context", None)
+        return ctx is not None and ctx <= 8192
+
     def _planning_output_contract(self) -> str:
-        return """If needs_subagents is true, include "subagent_requirements":
+        if self._is_small_context_model():
+            return """CRITICAL RULES when needs_subagents is true:
+- You MUST include BOTH "subagent_requirements" AND "subtasks" — omitting either will cause delegation to fail.
+- Each subtask's "assigned_agent" MUST exactly match an "agent_name" in subagent_requirements.
+
+"subagent_requirements": [{"agent_name": "ExactName", "agent_type": "specialist type", "task_description": "task", "required_tools": ["tool1"], "expected_output": "output", "parallel_safe": false, "write_scope": [], "read_scope": [], "delegation_allowed": true, "parameters": {}}]
+
+"subtasks": [{"name": "name", "description": "desc", "type": "atomic", "priority": 1, "dependencies": [], "assigned_agent": "ExactName", "parallel_safe": false, "write_scope": [], "read_scope": [], "delegation_allowed": true}]
+
+If needs_subagents is false, include "self_execution_steps": ["step 1", "step 2"]
+
+Defaults: parallel_safe=false, write_scope=[], read_scope=[], delegation_allowed=true"""
+
+        return """CRITICAL RULES when needs_subagents is true:
+- You MUST include BOTH "subagent_requirements" AND "subtasks" in your response.
+- Omitting either field will cause the entire delegation to silently fall back to self-execution.
+- Each entry in "subtasks" MUST have an "assigned_agent" value that EXACTLY matches an "agent_name" in "subagent_requirements".
+- There must be a 1-to-1 correspondence: every subtask maps to one requirement, every requirement maps to at least one subtask.
+
+"subagent_requirements" (REQUIRED when needs_subagents=true):
    [
      {
-       "agent_name": "name for the subagent",
+       "agent_name": "ExactAgentName",
        "agent_type": "specialist type (e.g., coder, researcher, analyst)",
        "task_description": "specific task for this subagent",
        "required_tools": ["tool1", "tool2"],
@@ -419,24 +494,24 @@ class Agent(ABC):
      }
    ]
 
-If needs_subagents is false, include "self_execution_steps":
-   ["step 1 description", "step 2 description", ...]
-
-If needs_subagents is true, also include "subtasks" for the plan:
+"subtasks" (REQUIRED when needs_subagents=true — must pair with subagent_requirements above):
    [
      {
        "name": "subtask name",
        "description": "detailed description",
        "type": "atomic" | "composite",
        "priority": 1-3,
-       "dependencies": ["dependency_task_id"],
-       "assigned_agent": "agent_name",
+       "dependencies": [],
+       "assigned_agent": "ExactAgentName",
        "parallel_safe": true | false,
        "write_scope": ["path/or/resource"],
        "read_scope": ["path/or/resource"],
        "delegation_allowed": true | false
      }
    ]
+
+If needs_subagents is false, include "self_execution_steps":
+   ["step 1 description", "step 2 description", ...]
 
 Use conservative defaults when unsure:
 - parallel_safe=false
@@ -536,7 +611,21 @@ Task: {context.task}
 Context:
 - Agent Role: {self.config.role.value}
 - Available Tools: {[t.name for t in self._tools.list_tools() if t.is_available()]}
-- Child Agents: {[c.name for c in self._tree.children]}
+- Existing Child Agents: {[c.name for c in self._tree.children]} (you can create NEW child agents if needed)
+- Max Delegation Depth: {self._planner.config.max_depth} (current depth: {context.depth})
+
+IMPORTANT - Delegation Guidelines:
+You are a {self.config.role.value} agent. You have the ability to CREATE new child agents and delegate subtasks to them.
+- If your role is "root" or "coordinator", you SHOULD prefer delegating to specialized child agents rather than executing everything yourself.
+- Set needs_subagents=true when ANY of these conditions apply:
+  * The task involves multiple distinct domains (e.g., frontend + backend, code + documentation)
+  * The task can be parallelized (independent subtasks can run concurrently)
+  * The task requires more than 3-4 tool calls (splitting improves reliability and focus)
+  * The task involves different technology stacks or skill sets
+  * A single agent would need to context-switch between unrelated work
+- Set needs_subagents=false ONLY when the task is truly simple and atomic (1-2 tool calls, single domain).
+
+{self._suggest_subagent_types(context)}
 
 You MUST respond with a JSON structure containing:
 1. "complexity": "simple" | "moderate" | "complex"
@@ -545,16 +634,43 @@ You MUST respond with a JSON structure containing:
    - complex: requires multiple specialized agents working together
 
 2. "needs_subagents": true | false
-   - true if task needs to be delegated to child agents
-   - false if this agent can handle it alone
+   - true if task should be delegated to child agents (preferred for complex/multi-domain tasks)
+   - false ONLY if this agent can handle it alone in 1-2 simple steps
 
-3. "reasoning": brief explanation of your analysis
+3. "reasoning": brief explanation of your analysis, including why you chose to delegate or not
 
 4. {self._planning_output_contract()}"""
 
         response = await self._llm.chat(prompt)
         plan_result = await self._parse_plan_response(response.content, context)
+
+        original_needs_subagents = plan_result.needs_subagents
         plan_result = self._finalize_plan_result(plan_result, context)
+
+        if plan_result.needs_subagents != original_needs_subagents:
+            emit_agent_event(
+                EventType.DELEGATION_DOWNGRADED,
+                self,
+                message=f"Plan downgraded: needs_subagents changed from {original_needs_subagents} to {plan_result.needs_subagents}",
+                metadata={
+                    "original_needs_subagents": original_needs_subagents,
+                    "final_needs_subagents": plan_result.needs_subagents,
+                    "reasoning": plan_result.reasoning,
+                },
+            )
+
+        emit_agent_event(
+            EventType.PLAN_RESULT,
+            self,
+            message=f"Plan completed: complexity={plan_result.complexity.value}, needs_subagents={plan_result.needs_subagents}",
+            metadata={
+                "complexity": plan_result.complexity.value,
+                "needs_subagents": plan_result.needs_subagents,
+                "reasoning": plan_result.reasoning,
+                "subagent_count": len(plan_result.subagent_requirements) if plan_result.subagent_requirements else 0,
+                "self_execution_steps": plan_result.self_execution_steps,
+            },
+        )
 
         if plan_result.plan:
             await self._memory.add(
@@ -618,6 +734,27 @@ You MUST respond with a JSON structure containing:
 
         plan = None
         tasks_data = data.get("subtasks") or data.get("tasks", [])
+
+        # If needs_subagents=true but subtasks are missing, auto-synthesize them from
+        # subagent_requirements so that a missing "subtasks" field doesn't silently
+        # downgrade delegation to self-execution.
+        if needs_subagents and subagent_requirements and not tasks_data:
+            tasks_data = [
+                {
+                    "name": req.agent_name,
+                    "description": req.task_description,
+                    "type": "atomic",
+                    "priority": 2,
+                    "dependencies": [],
+                    "assigned_agent": req.agent_name,
+                    "parallel_safe": req.parallel_safe,
+                    "write_scope": req.write_scope,
+                    "read_scope": req.read_scope,
+                    "delegation_allowed": req.delegation_allowed,
+                }
+                for req in subagent_requirements
+            ]
+
         if tasks_data and needs_subagents:
             root_task = Task(
                 id="root",
@@ -653,8 +790,17 @@ You MUST respond with a JSON structure containing:
                 plan = None
 
         if needs_subagents and (not subagent_requirements or not plan):
+            # Log the specific reason so it's visible in events rather than silently downgrading.
+            if not subagent_requirements:
+                downgrade_reason = "needs_subagents=true but subagent_requirements is empty"
+            else:
+                downgrade_reason = (
+                    "needs_subagents=true but plan could not be built from subtasks "
+                    "(subtasks may be missing or failed validation)"
+                )
             needs_subagents = False
             self_execution_steps = self_execution_steps or [context.task]
+            reasoning = f"[AUTO_DOWNGRADED] {reasoning} | Reason: {downgrade_reason}"
 
         return PlanResult(
             plan=plan,
@@ -1050,6 +1196,18 @@ Reflect: 1) Was the goal achieved? 2) What could be improved? 3) Any follow-up a
                 return True, "Accepted direct execution result without tool calls."
             return False, "No tool calls were made. The task requires actual execution via tools, not just text output."
 
+        failed_tool_summary = []
+        for tc in result.tool_calls:
+            if tc.result and hasattr(tc.result, "metadata") and tc.result.metadata.get("error"):
+                error_msg = tc.result.metadata.get("error_message", "Unknown error")
+                failed_tool_summary.append(f"- {tc.name}: {error_msg}")
+            elif tc.error:
+                failed_tool_summary.append(f"- {tc.name}: {tc.error}")
+
+        tool_summary_section = ""
+        if failed_tool_summary:
+            tool_summary_section = f"\n\nFailed Tool Calls:\n" + "\n".join(failed_tool_summary)
+
         prompt = f"""Evaluate whether the task execution achieved its goal.
 
 Original Task: {context.task}
@@ -1058,9 +1216,11 @@ Execution Result:
 - Output: {result.output[:500]}
 - Iterations: {result.iterations}
 - Tool calls made: {len(result.tool_calls)}
+- Failed tool calls: {len(failed_tool_summary)}
 - Subtask results: {len(result.subtask_results)}
+{tool_summary_section}
 
-IMPORTANT: The task is only achieved if actual operations were performed (e.g., files created, commands executed). Simply providing instructions or guidance without executing tools does NOT count as achieving the goal.
+IMPORTANT: The task is only achieved if actual operations were performed (e.g., files created, commands executed). Simply providing instructions or guidance without executing tools does NOT count as achieving the goal. If any critical tool call failed (e.g., install timeout, command error), the goal is NOT achieved.
 
 Respond with a JSON:
 {{
@@ -1075,6 +1235,9 @@ Respond with a JSON:
         data = extract_json_from_llm_response(response.content)
         if data:
             return data.get("goal_achieved", False), data.get("evaluation", "")
+
+        if failed_tool_summary:
+            return False, f"Could not parse evaluation, but {len(failed_tool_summary)} tool call(s) failed: " + "; ".join(failed_tool_summary[:3])
 
         return result.success, "Could not parse evaluation, using success flag"
 
@@ -1480,9 +1643,25 @@ Execute this step using the available tools. Focus ONLY on this step.
             else:
                 break
 
+        output = response.content
+        if not output or not output.strip():
+            tool_output_parts = []
+            for tc in tool_history:
+                if tc.result and hasattr(tc.result, "output") and tc.result.output:
+                    tool_output_parts.append(f"[{tc.name}] {tc.result.output}")
+            if tool_output_parts:
+                output = "\n\n".join(tool_output_parts)
+            else:
+                output = ""
+
+        has_failed_tools = any(
+            tc.result and hasattr(tc.result, "metadata") and tc.result.metadata.get("error")
+            for tc in tool_history
+        )
+
         return AgentResult(
-            success=True,
-            output=response.content,
+            success=not has_failed_tools,
+            output=output,
             tool_calls=tool_history,
             iterations=self._iteration,
             metadata={"execution_mode": "self", "complexity": plan_result.complexity.value},

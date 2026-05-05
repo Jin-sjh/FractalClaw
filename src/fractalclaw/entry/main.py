@@ -20,7 +20,7 @@ from prompt_toolkit.formatted_text import ANSI
 from prompt_toolkit.styles import Style
 from prompt_toolkit.application import get_app
 
-PROJECT_ROOT = Path(__file__).resolve().parent.parent
+PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent.parent
 
 logger = logging.getLogger(__name__)
 if str(PROJECT_ROOT) not in sys.path:
@@ -31,13 +31,15 @@ from dotenv import load_dotenv
 from fractalclaw.agent import (
     Agent,
     AgentConfig,
+    AgentContext,
     AgentResult,
     AgentRole,
     AgentFactory,
 )
 from fractalclaw.agent.config_generator import AgentConfigGenerator
-from fractalclaw.scheduler import Scheduler, SchedulerConfig
-from fractalclaw.scheduler.agent_workspace import AgentWorkspaceManager
+from fractalclaw.agent.loader import ConfigLoader
+from fractalclaw.scheduler import Scheduler, SchedulerConfig, TaskPriority
+from fractalclaw.scheduler.agent_workspace import AgentWorkspaceManager, WorkDocument
 from fractalclaw.llm import LLMConfig, OpenAICompatibleProvider
 
 
@@ -135,6 +137,7 @@ class FractalClawApp:
 
     def __init__(self, config_path: Optional[Path] = None):
         self.config_path = config_path or self._get_default_config_path()
+        self.intent_agent: Optional[Agent] = None
         self.config_generator: Optional[AgentConfigGenerator] = None
         self.scheduler: Optional[Scheduler] = None
         self.workspace_manager: Optional[AgentWorkspaceManager] = None
@@ -200,6 +203,61 @@ class FractalClawApp:
         )
         self.scheduler.set_agent_factory(self.agent_factory)
 
+        intent_config = self._load_intent_agent_config()
+        intent_config.llm_config = self.llm_config
+        self.intent_agent = self.agent_factory.create_from_config(
+            intent_config,
+            cache_key="__intent_agent__",
+        )
+
+    def _load_intent_agent_config(self) -> AgentConfig:
+        """加载意图识别Agent配置"""
+        from fractalclaw.agent.loader import WorkflowConfig, WorkflowStep
+
+        intent_config_path = self.config_path / "configs" / "basic_agents" / "agent_intent_recognition.yaml"
+        
+        if intent_config_path.exists():
+            with open(intent_config_path, 'r', encoding='utf-8') as f:
+                data = yaml.safe_load(f) or {}
+            
+            workflow_data = data.get('workflow')
+            workflow = None
+            if workflow_data:
+                steps = [
+                    WorkflowStep(
+                        step=s.get('step', i + 1),
+                        name=s.get('name', ''),
+                        description=s.get('description', ''),
+                        action=s.get('action', ''),
+                    )
+                    for i, s in enumerate(workflow_data.get('steps', []))
+                ]
+                workflow = WorkflowConfig(
+                    name=workflow_data.get('name', ''),
+                    steps=steps,
+                )
+
+            return AgentConfig(
+                name=data.get('name', 'IntentRecognitionAgent'),
+                description=data.get('description', ''),
+                role=AgentRole.SPECIALIST,
+                system_prompt=data.get('system_prompt', ''),
+                max_iterations=data.get('behavior', {}).get('max_iterations', 5),
+                enable_planning=False,
+                enable_reflection=False,
+                workflow=workflow,
+            )
+        
+        return AgentConfig(
+            name="IntentRecognitionAgent",
+            description="意图识别Agent",
+            role=AgentRole.SPECIALIST,
+            system_prompt="你是一个专业的意图识别助手，负责将用户输入的话语进行结构化解析。",
+            max_iterations=5,
+            enable_planning=False,
+            enable_reflection=False,
+        )
+
     def _load_global_settings(self) -> dict:
         """加载全局配置"""
         settings_path = self.config_path / "configs" / "settings.yaml"
@@ -240,7 +298,7 @@ class FractalClawApp:
 
         self.spinner.is_spinning = False
         self._display_execution_plan(workspace_path, intent_result["requirements"])
-        
+
         confirmed = await self._confirm_execution()
         if not confirmed:
             return AgentResult(
@@ -249,8 +307,20 @@ class FractalClawApp:
                 error="User cancelled execution",
             )
 
+        if hasattr(self, 'task_queue'):
+            while not self.task_queue.empty():
+                try:
+                    self.task_queue.get_nowait()
+                    self.task_queue.task_done()
+                except asyncio.QueueEmpty:
+                    break
+
+        cprint(f"  \033[38;5;141m✦\033[0m \033[38;5;250m开始执行任务...\033[0m\n")
+
         self.spinner.phase = "execute"
         self.spinner.current_words = ["Executing...", "Running Root Agent..."]
+        self.spinner.is_spinning = True
+        self.spinner.start_time = time.time()
         t3 = time.time()
         result = await self._execute_root_agent(task.id, root_agent_config, workspace_path, intent_result, generation_result)
         logger.info(f"[perf] root_agent_execution: {time.time() - t3:.2f}s")
@@ -279,72 +349,20 @@ class FractalClawApp:
         return "\n".join(context_parts)
 
     async def _analyze_intent(self, user_input: str) -> dict:
-        """直接调用 LLM 进行意图识别（不走 Agent workflow）"""
-        from fractalclaw.llm import LLMEngine
-        from fractalclaw.llm.engine import LLMException
-        
-        intent_config_path = self.config_path / "configs" / "basic_agents" / "agent_intent_recognition.yaml"
-        system_prompt = ""
-        if intent_config_path.exists():
-            with open(intent_config_path, 'r', encoding='utf-8') as f:
-                data = yaml.safe_load(f) or {}
-                system_prompt = data.get('system_prompt', '')
-        
-        llm_config = LLMConfig(
-            model=self.llm_config.model,
-            stream=False,
-            max_tokens=1024,
-            max_retries=2,
-            retry_delay=2.0,
-            timeout=60.0,
+        """调用意图识别Agent分析用户输入"""
+        context = AgentContext(
+            task=user_input,
+            metadata={"phase": "intent_recognition"}
         )
         
-        max_attempts = 3
-        last_error = None
+        result = await self.intent_agent.run(context)
         
-        for attempt in range(max_attempts):
-            try:
-                engine = LLMEngine(llm_config)
-                engine.set_provider(self.provider)
-                
-                if system_prompt:
-                    engine.set_system_prompt(system_prompt)
-                
-                response = await engine.chat(user_input)
-                
-                if not response.content or not response.content.strip():
-                    logger.warning(f"意图识别返回空内容，尝试 {attempt + 1}/{max_attempts}")
-                    last_error = "LLM 返回空内容"
-                    await asyncio.sleep(1)
-                    continue
-                
-                parsed = self._parse_intent_output(response.content)
-                
-                if not parsed.get("任务需求") or parsed.get("任务需求") == ["完成用户任务"]:
-                    logger.warning(f"意图解析失败，尝试 {attempt + 1}/{max_attempts}")
-                    last_error = "意图解析失败"
-                    await asyncio.sleep(1)
-                    continue
-                
-                return {
-                    "requirements": parsed.get("任务需求", [user_input]),
-                    "acceptance_criteria": parsed.get("验收结果", []),
-                    "raw_output": response.content
-                }
-                
-            except LLMException as e:
-                logger.error(f"LLM 异常: {e.error_type} - {e.message}")
-                last_error = f"LLM 异常: {e.message}"
-                await asyncio.sleep(2)
-            except Exception as e:
-                logger.error(f"意图识别异常: {e}")
-                last_error = str(e)
-                await asyncio.sleep(1)
+        parsed = self._parse_intent_output(result.output)
         
         return {
-            "requirements": [user_input],
-            "acceptance_criteria": [],
-            "raw_output": f"意图识别失败: {last_error}"
+            "requirements": parsed.get("任务需求", [user_input]),
+            "acceptance_criteria": parsed.get("验收结果", []),
+            "raw_output": result.output
         }
 
     def _parse_intent_output(self, output: str) -> dict:
@@ -353,15 +371,11 @@ class FractalClawApp:
             yaml_match = re.search(r'```yaml\s*(.*?)\s*```', output, re.DOTALL)
             if yaml_match:
                 yaml_content = yaml_match.group(1)
-                parsed = yaml.safe_load(yaml_content)
-                if isinstance(parsed, dict):
-                    return parsed
-
+                return yaml.safe_load(yaml_content) or {}
+            
             yaml_match = re.search(r'任务需求:.*?(?=验收结果:|```|$)', output, re.DOTALL)
             if yaml_match:
-                parsed = yaml.safe_load(output)
-                if isinstance(parsed, dict):
-                    return parsed
+                return yaml.safe_load(output) or {}
         except yaml.YAMLError:
             pass
         
@@ -382,6 +396,23 @@ class FractalClawApp:
             "任务需求": requirements if requirements else ["完成用户任务"],
             "验收结果": acc_criteria
         }
+
+    def _display_execution_plan(self, workspace_path: Path, requirements: list[str]) -> None:
+        cprint()
+        cprint(f"  \033[38;5;122m{'═' * 50}\033[0m")
+        cprint(f"  \033[38;5;122m📋 执行计划\033[38;5;122m")
+        cprint(f"  \033[38;5;122m{'═' * 50}\033[0m")
+
+        cprint(f"\n  \033[38;5;214m工作空间：\033[0m")
+        cprint(f"    \033[38;5;247m{workspace_path}\033[0m")
+
+        if requirements:
+            cprint(f"\n  \033[38;5;214m将执行以下任务：\033[0m")
+            for i, req in enumerate(requirements, 1):
+                cprint(f"    \033[38;5;247m{i}.\033[0m {req}")
+
+        cprint(f"\n  \033[38;5;122m{'═' * 50}\033[0m")
+        cprint()
 
     def _display_intent_result(self, intent_result: dict) -> None:
         """显示意图理解结果"""
@@ -405,41 +436,22 @@ class FractalClawApp:
         cprint(f"\n  \033[38;5;122m{'═' * 50}\033[0m")
         cprint()
 
-    def _display_execution_plan(self, workspace_path: Path, requirements: list[str]) -> None:
-        """显示执行计划"""
-        cprint()
-        cprint(f"  \033[38;5;122m{'═' * 50}\033[0m")
-        cprint(f"  \033[38;5;122m📋 执行计划\033[38;5;122m")
-        cprint(f"  \033[38;5;122m{'═' * 50}\033[0m")
-        
-        cprint(f"\n  \033[38;5;214m工作空间：\033[0m")
-        cprint(f"    \033[38;5;247m{workspace_path}\033[0m")
-        
-        if requirements:
-            cprint(f"\n  \033[38;5;214m将执行以下任务：\033[0m")
-            for i, req in enumerate(requirements, 1):
-                cprint(f"    \033[38;5;247m{i}.\033[0m {req}")
-        
-        cprint(f"\n  \033[38;5;122m{'═' * 50}\033[0m")
-        cprint()
-
     async def _confirm_execution(self) -> bool:
-        """获取用户对执行计划的确认"""
         cprint(f"  \033[38;5;51m是否开始执行？\033[0m")
         cprint(f"  \033[38;5;242m  [Y] 开始执行  [n] 取消任务\033[0m")
-        
+
         self._pending_confirmation = True
-        
+
         while True:
             response = await self._confirmation_queue.get()
             response = response.strip()
-            
+
             if not response:
                 cprint(f"  \033[38;5;242m请输入 Y 开始执行 或 n 取消\033[0m")
                 continue
-            
+
             self._pending_confirmation = False
-            
+
             if response.lower() in ['y', 'yes', '是', '确认', '开始', '执行']:
                 return True
             else:
@@ -620,6 +632,8 @@ class FractalClawApp:
         return result
 
     async def _handle_new_session(self) -> None:
+        if self.intent_agent and hasattr(self.intent_agent, '_memory') and self.intent_agent._memory:
+            await self.intent_agent._memory.end_session("User requested new session", "interrupted")
         cprint("  \033[38;5;141m✦ 新会话已开启，之前的内容已保存到日志记忆。\033[0m")
 
     async def run(self):

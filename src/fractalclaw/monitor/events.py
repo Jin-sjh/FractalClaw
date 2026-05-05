@@ -36,7 +36,10 @@ class EventType(Enum):
     DELEGATION_RESULT = "delegation_result"
 
     PLAN_CREATED = "plan_created"
+    PLAN_RESULT = "plan_result"
     REPLAN_TRIGGERED = "replan_triggered"
+
+    DELEGATION_DOWNGRADED = "delegation_downgraded"
 
     ITERATION_COMPLETED = "iteration_completed"
 

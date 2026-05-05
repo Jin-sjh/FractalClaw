@@ -30,6 +30,9 @@ class LLMGenerateTool(BaseTool):
     def set_provider(self, provider: Any) -> None:
         self._llm_provider = provider
 
+    def is_available(self) -> bool:
+        return self._llm_provider is not None
+
     async def execute(self, params: LLMGenerateParameters, ctx: Any) -> ToolResult:
         if not self._llm_provider:
             return ToolResult.error(

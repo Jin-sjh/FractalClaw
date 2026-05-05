@@ -67,9 +67,10 @@ class WriteChunkedTool(BaseTool):
         Returns:
             ToolResult with write status
         """
-        await ctx.ask_permission(PermissionRequest.for_file_write(params.file_path))
+        resolved_path = ctx.resolve_path(params.file_path)
+        await ctx.ask_permission(PermissionRequest.for_file_write(resolved_path))
 
-        path = Path(params.file_path)
+        path = Path(resolved_path)
 
         if params.create_dirs and params.chunk_index == 0:
             path.parent.mkdir(parents=True, exist_ok=True)
@@ -86,7 +87,7 @@ class WriteChunkedTool(BaseTool):
             return ToolResult(
                 title=f"{path.name} (chunk {params.chunk_index + 1})",
                 output=(
-                    f"Chunk {progress} written to {params.file_path}. "
+                    f"Chunk {progress} written to {resolved_path}. "
                     f"File size: {file_size} bytes."
                 ),
                 metadata={
@@ -102,7 +103,7 @@ class WriteChunkedTool(BaseTool):
         except PermissionError:
             return ToolResult.error(
                 title=path.name,
-                error_message=f"Permission denied: {params.file_path}",
+                error_message=f"Permission denied: {resolved_path}",
             )
         except Exception as e:
             return ToolResult.error(

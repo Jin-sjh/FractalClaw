@@ -45,20 +45,21 @@ class ReadTool(BaseTool):
         Returns:
             ToolResult with file contents
         """
-        await ctx.ask_permission(PermissionRequest.for_file_read(params.file_path))
+        resolved_path = ctx.resolve_path(params.file_path)
+        await ctx.ask_permission(PermissionRequest.for_file_read(resolved_path))
 
-        path = Path(params.file_path)
+        path = Path(resolved_path)
 
         if not path.exists():
             return ToolResult.error(
                 title=path.name,
-                error_message=f"File not found: {params.file_path}",
+                error_message=f"File not found: {resolved_path}",
             )
 
         if not path.is_file():
             return ToolResult.error(
                 title=path.name,
-                error_message=f"Path is not a file: {params.file_path}",
+                error_message=f"Path is not a file: {resolved_path}",
             )
 
         try:
@@ -74,7 +75,7 @@ class ReadTool(BaseTool):
         except PermissionError:
             return ToolResult.error(
                 title=path.name,
-                error_message=f"Permission denied: {params.file_path}",
+                error_message=f"Permission denied: {resolved_path}",
             )
         except Exception as e:
             return ToolResult.error(

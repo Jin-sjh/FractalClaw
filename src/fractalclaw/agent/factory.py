@@ -138,7 +138,7 @@ class AgentFactory:
             workflow=config.workflow,
         )
         agent = BaseAgent(normalized_config)
-        return self._configure_agent(agent, tool_defs or [], cache_key=cache_key)
+        return self._configure_agent(agent, tool_defs, cache_key=cache_key)
 
     def _build_agent(
         self,
@@ -237,7 +237,10 @@ class AgentFactory:
         agent: Agent,
         tool_defs: list[dict[str, Any]],
     ) -> None:
-        declared_tools = tool_defs or self._default_tool_defs_for_role(agent.config.role)
+        if tool_defs is not None:
+            declared_tools = tool_defs
+        else:
+            declared_tools = self._default_tool_defs_for_role(agent.config.role)
         for tool_def in declared_tools:
             self._attach_tool_definition(agent, tool_def)
 

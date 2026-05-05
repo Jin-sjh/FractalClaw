@@ -54,7 +54,7 @@ class ToolConfig:
     """Configuration for tool manager."""
 
     max_concurrent_calls: int = 5
-    default_timeout: float = 30.0
+    default_timeout: float = 120.0
     enable_approval: bool = False
     enable_output_truncation: bool = True
     max_output_length: int = 10000
@@ -87,10 +87,12 @@ class ToolManager:
         config: Optional[ToolConfig] = None,
         registry: Optional[ToolRegistry] = None,
         permission_manager: Optional[PermissionManager] = None,
+        workspace_path: Optional[str] = None,
     ):
         self.config = config or ToolConfig()
         self.registry = registry or ToolRegistry()
         self.permissions = permission_manager or PermissionManager()
+        self._workspace_path = workspace_path
         self._call_history: list[ToolCall] = []
         self._call_counter = 0
 
@@ -153,15 +155,17 @@ class ToolManager:
 
     def _create_context(self, call_id: str, session_id: Optional[str] = None) -> ToolContext:
         """Create execution context for a tool call."""
-        return (
+        builder = (
             ToolContextBuilder()
             .session_id(session_id or "default")
             .message_id(f"msg_{uuid.uuid4().hex[:8]}")
             .agent_name("tool_manager")
             .call_id(call_id)
             .permission_manager(self.permissions)
-            .build()
         )
+        if self._workspace_path:
+            builder = builder.workspace_path(self._workspace_path)
+        return builder.build()
 
     async def execute(
         self,

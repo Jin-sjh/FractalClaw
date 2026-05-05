@@ -24,7 +24,7 @@ class BashParameters(ToolParameters):
     """Parameters for the bash tool."""
 
     command: str = Field(description="The command to execute")
-    timeout: Optional[int] = Field(default=30, description="Timeout in seconds")
+    timeout: Optional[int] = Field(default=120, description="Timeout in seconds")
     cwd: Optional[str] = Field(default=None, description="Working directory for command execution")
     env: Optional[Dict[str, str]] = Field(default=None, description="Environment variables")
 
@@ -42,7 +42,7 @@ class BashTool(BaseTool):
     category = "execution"
     tags = ["shell", "command", "execute"]
 
-    DEFAULT_TIMEOUT = 30
+    DEFAULT_TIMEOUT = 120
     MAX_OUTPUT_LENGTH = 50000
 
     async def execute(self, params: BashParameters, ctx: ToolContext) -> ToolResult:
@@ -70,6 +70,9 @@ class BashTool(BaseTool):
 
         timeout = params.timeout or self.DEFAULT_TIMEOUT
         cwd = params.cwd
+
+        if not cwd and ctx.workspace_path:
+            cwd = ctx.workspace_path
 
         if cwd:
             if hasattr(ctx, 'permission_manager') and ctx.permission_manager:

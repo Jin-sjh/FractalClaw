@@ -50,14 +50,15 @@ class SearchTool(BaseTool):
         Returns:
             ToolResult with search results
         """
-        await ctx.ask_permission(PermissionRequest.for_file_read(params.path))
+        resolved_path = ctx.resolve_path(params.path)
+        await ctx.ask_permission(PermissionRequest.for_file_read(resolved_path))
 
-        search_path = Path(params.path)
+        search_path = Path(resolved_path)
 
         if not search_path.exists():
             return ToolResult.error(
                 title="search",
-                error_message=f"Path not found: {params.path}",
+                error_message=f"Path not found: {resolved_path}",
             )
 
         results: list[str] = []
@@ -175,14 +176,15 @@ class FindFilesTool(BaseTool):
         Returns:
             ToolResult with found files
         """
-        await ctx.ask_permission(PermissionRequest.for_file_read(params.path))
+        resolved_path = ctx.resolve_path(params.path)
+        await ctx.ask_permission(PermissionRequest.for_file_read(resolved_path))
 
-        search_path = Path(params.path)
+        search_path = Path(resolved_path)
 
         if not search_path.exists():
             return ToolResult.error(
                 title="find_files",
-                error_message=f"Path not found: {params.path}",
+                error_message=f"Path not found: {resolved_path}",
             )
 
         results: list[str] = []

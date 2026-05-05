@@ -18,6 +18,7 @@ class ToolContext:
     - Permission checking and requesting
     - Metadata recording
     - Abort signal handling
+    - Workspace path for file operations
 
     Example:
         async def execute(self, params: ReadParameters, ctx: ToolContext) -> ToolResult:
@@ -42,6 +43,7 @@ class ToolContext:
     call_id: Optional[str] = None
     depth: int = 0
     parent_call_id: Optional[str] = None
+    workspace_path: Optional[str] = None
 
     _permission_manager: Optional["PermissionManager"] = field(default=None, repr=False)
     _metadata_entries: list[dict[str, Any]] = field(default_factory=list, repr=False)
@@ -130,10 +132,35 @@ class ToolContext:
             call_id=call_id,
             depth=self.depth + 1,
             parent_call_id=self.call_id,
+            workspace_path=self.workspace_path,
             _permission_manager=self._permission_manager,
             _on_abort=self._on_abort,
             _permission_callback=self._permission_callback,
         )
+
+    def resolve_path(self, file_path: str) -> str:
+        """Resolve a file path relative to the workspace.
+
+        If the path is already absolute, return it as-is.
+        If the path is relative and a workspace_path is set,
+        resolve it against the workspace directory.
+
+        Args:
+            file_path: The file path to resolve
+
+        Returns:
+            The resolved absolute path
+        """
+        from pathlib import Path as _Path
+
+        p = _Path(file_path)
+        if p.is_absolute():
+            return file_path
+
+        if self.workspace_path:
+            return str(_Path(self.workspace_path) / file_path)
+
+        return file_path
 
 
 @dataclass
@@ -146,6 +173,7 @@ class ToolContextBuilder:
     _call_id: Optional[str] = None
     _depth: int = 0
     _parent_call_id: Optional[str] = None
+    _workspace_path: Optional[str] = None
     _permission_manager: Optional["PermissionManager"] = None
     _on_abort: Optional[Callable[[], bool]] = None
     _permission_callback: Optional[Callable[["PermissionRequest"], "PermissionResult"]] = None
@@ -180,6 +208,11 @@ class ToolContextBuilder:
         self._parent_call_id = parent_call_id
         return self
 
+    def workspace_path(self, workspace_path: str) -> "ToolContextBuilder":
+        """Set the workspace path."""
+        self._workspace_path = workspace_path
+        return self
+
     def permission_manager(self, manager: "PermissionManager") -> "ToolContextBuilder":
         """Set the permission manager."""
         self._permission_manager = manager
@@ -206,6 +239,7 @@ class ToolContextBuilder:
             call_id=self._call_id,
             depth=self._depth,
             parent_call_id=self._parent_call_id,
+            workspace_path=self._workspace_path,
             _permission_manager=self._permission_manager,
             _on_abort=self._on_abort,
             _permission_callback=self._permission_callback,

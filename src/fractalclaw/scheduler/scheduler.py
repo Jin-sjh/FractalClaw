@@ -567,9 +567,30 @@ class Scheduler:
         with open(result_file, "w", encoding="utf-8") as f:
             json.dump(result_data, f, indent=2, ensure_ascii=False)
 
+        output_text = output_path / "output.txt"
         if result.output:
-            output_text = output_path / "output.txt"
             output_text.write_text(result.output, encoding="utf-8")
+        else:
+            tool_summaries = []
+            for tc in result.tool_calls:
+                tc_output = ""
+                if tc.result and hasattr(tc.result, "output") and tc.result.output:
+                    tc_output = tc.result.output
+                elif tc.error:
+                    tc_output = f"ERROR: {tc.error}"
+                if tc_output:
+                    tool_summaries.append(f"[{tc.name}] {tc_output}")
+            if tool_summaries:
+                output_text.write_text(
+                    "(No direct output from agent. Tool call results:)\n\n"
+                    + "\n\n".join(tool_summaries),
+                    encoding="utf-8",
+                )
+            else:
+                output_text.write_text(
+                    "(No output was generated during task execution.)",
+                    encoding="utf-8",
+                )
 
     def cancel_task(self, task_id: str) -> bool:
         """取消正在执行的任务。"""

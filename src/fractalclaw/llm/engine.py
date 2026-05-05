@@ -10,6 +10,8 @@ from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any, AsyncIterator, Callable, Optional
 
+import httpx
+
 logger = logging.getLogger(__name__)
 
 
@@ -420,10 +422,11 @@ class OpenAICompatibleProvider(LLMProvider):
                 "openai package is required. Install it with: pip install openai"
             )
         
-        if base_url and not base_url.rstrip('/').endswith('/v1'):
-            base_url = base_url.rstrip('/') + '/v1'
-        
-        self._client = AsyncOpenAI(api_key=api_key, base_url=base_url)
+        self._client = AsyncOpenAI(
+            api_key=api_key,
+            base_url=base_url,
+            timeout=httpx.Timeout(connect=30.0, read=600.0, write=600.0, pool=600.0),
+        )
         self._default_model = model
 
     def _messages_to_openai_format(

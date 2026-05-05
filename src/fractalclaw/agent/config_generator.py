@@ -312,7 +312,7 @@ class AgentConfigGenerator:
     def _get_default_model_config(self, task_type: str = None) -> Optional[dict[str, Any]]:
         """从 .env 读取默认模型配置
         
-        优先使用 fractalclaw config 命令配置的默认模型
+        优先使用 fractal config 命令配置的默认模型
         支持为不同任务类型配置不同的模型
         
         Args:
@@ -638,6 +638,7 @@ class AgentConfigGenerator:
             "reasoning": ("coordinator", [], ["任务分解", "资源协调", "结果整合"]),
             "chat": ("worker", [], ["对话理解", "信息提供", "问题解答"]),
             "writing": ("specialist", ["llm_generate", "read", "write"], ["内容创作", "文案撰写", "翻译"]),
+            "fullstack": ("root", ["read", "write", "bash"], ["前端开发", "后端开发", "全栈协调"]),
         }
 
         role = "worker"
@@ -647,6 +648,16 @@ class AgentConfigGenerator:
         mapping = TASK_TYPE_ROLE_MAP.get(classification.task_type)
         if mapping:
             role, tools, capabilities = mapping
+
+        fullstack_indicators = [
+            "前端", "后端", "frontend", "backend", "fullstack", "full_stack", "full stack",
+            "全栈", "前后端", "react.*api", "vue.*server", "界面.*接口",
+        ]
+        if any(ind in requirement.lower() for ind in fullstack_indicators):
+            if "前端" in requirement or "后端" in requirement or "frontend" in requirement.lower() or "backend" in requirement.lower():
+                role = "root"
+                tools = list(set(tools + ["read", "write", "bash"]))
+                capabilities = list(set(capabilities + ["前端开发", "后端开发", "任务分解"]))
 
         complexity = self._analyze_complexity(requirement)
         importance = self._analyze_importance(requirement)
@@ -814,6 +825,13 @@ class AgentConfigGenerator:
 - worker: 执行具体任务的通用 Agent
 - specialist: 在特定领域有专业能力的 Agent
 - coordinator: 负责任务分解和协调的 Agent
+- root: 顶层协调 Agent，负责将复杂任务拆分为子 Agent 并委托执行（适用于涉及多个领域如前端+后端的全栈任务）
+
+角色选择原则：
+- 如果任务涉及多个不同领域（如前端+后端、代码+文档），应选择 root 角色
+- 如果任务是单一领域的专业工作，选择 specialist
+- 如果任务主要是协调和整合，选择 coordinator
+- 其他简单任务选择 worker
 
 工具选择原则：
 - 涉及文件读写 → 选择 read, write, edit
@@ -824,7 +842,7 @@ class AgentConfigGenerator:
 - 不确定时多选，宁可多给工具也不要遗漏
 
 请严格按照以下 JSON 格式返回（不要添加任何注释或额外文字）：
-{{"name": "英文名称", "description": "功能描述", "role": "worker或specialist或coordinator", "capabilities": ["能力1", "能力2"], "task_type": "code或research或coordinate或test或data或chat或general", "complexity": "simple或medium或complex", "importance": "low或medium或high", "tools": ["工具名"]}}"""
+{{"name": "英文名称", "description": "功能描述", "role": "worker或specialist或coordinator或root", "capabilities": ["能力1", "能力2"], "task_type": "code或research或coordinate或test或data或chat或general", "complexity": "simple或medium或complex", "importance": "low或medium或high", "tools": ["工具名"]}}"""
 
         try:
             from ..llm.engine import LLMConfig, Message, MessageRole

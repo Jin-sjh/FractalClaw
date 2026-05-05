@@ -1,320 +1,262 @@
-# FractalClaw
+# Todo待办事项应用
 
-A powerful AI Agent framework with hierarchical agent architecture.
+一个使用 **React** + **FastAPI** + **SQLite** 构建的全栈待办事项管理应用。
 
-## Features
+## 📋 项目概述
 
-- Hierarchical Agent Tree Structure
-- Plan-ReAct Execution Loop
-- Configurable via YAML
-- Tool Management
-- Memory Management
-- Planning System
+这是一个功能完整的Todo应用，支持以下特性：
+- ✅ 创建新的待办事项
+- ✅ 查看所有待办事项列表
+- ✅ 编辑待办事项内容
+- ✅ 删除待办事项
+- ✅ 标记待办事项为已完成/未完成
+- ✅ 实时统计待办事项状态
 
-## Installation
+## 🏗️ 技术栈
 
-```bash
-pip install -e .
+| 层级 | 技术 | 说明 |
+|------|------|------|
+| 前端 | React 18 | 用户界面框架 |
+| 后端 | FastAPI | Python Web框架 |
+| 数据库 | SQLite | 轻量级关系型数据库 |
+| HTTP客户端 | Axios | 前端API请求 |
+
+## 📁 项目结构
+
+```
+todo-app/
+├── backend/                # 后端目录
+│   ├── main.py            # FastAPI应用主文件
+│   ├── requirements.txt   # Python依赖
+│   └── todos.db          # SQLite数据库文件（运行后自动生成）
+├── frontend/              # 前端目录
+│   ├── public/
+│   │   └── index.html    # HTML模板
+│   ├── src/
+│   │   ├── App.js        # 主应用组件
+│   │   ├── App.css       # 样式文件
+│   │   ├── index.js      # React入口文件
+│   │   └── services/
+│   │       └── api.js    # API服务层
+│   └── package.json      # 前端依赖配置
+├── README.md              # 项目说明文档
+├── start.bat              # Windows启动脚本
+└── start.sh               # Linux/Mac启动脚本
 ```
 
-## Quick Start
+## 🚀 快速开始
 
-### Step 1: Configuration
+### 前置要求
 
-Before first use, you need to configure your API key and model:
+- **Python 3.8+**
+- **Node.js 14+** 和 **npm**
+- **Git**（可选）
 
+### 方式一：使用启动脚本（推荐）
+
+#### Windows系统：
 ```bash
-fractalclaw config
+start.bat
 ```
 
-This will launch an interactive configuration wizard to set up:
-- Model provider (OpenAI, Anthropic, Aliyun, Tencent, Ollama, etc.)
-- Model name (gpt-4, qwen-max, glm-4, etc.)
-- API Key
-- Base URL (optional, for proxies or compatible services)
-
-Alternatively, you can manually configure by copying the example file:
-
+#### Linux/Mac系统：
 ```bash
-cp .env.example .env
-# Then edit .env and fill in your API key and model settings
+chmod +x start.sh
+./start.sh
 ```
 
-### Step 2: Start Interactive Session
+### 方式二：手动启动
+
+#### 1. 启动后端服务
 
 ```bash
-fractalclaw run
+# 进入后端目录
+cd backend
+
+# 创建虚拟环境（推荐）
+python -m venv venv
+
+# 激活虚拟环境
+# Windows:
+venv\Scripts\activate
+# Linux/Mac:
+source venv/bin/activate
+
+# 安装依赖
+pip install -r requirements.txt
+
+# 启动FastAPI服务器
+uvicorn main:app --reload --host 0.0.0.0 --port 8000
 ```
 
-This will launch the FractalClaw interactive terminal where you can input tasks.
+后端服务将在 http://localhost:8000 启动
 
-### Step 3: Execute Tasks
+#### 2. 启动前端服务
 
-After starting, simply type your task description and press Enter. The system will:
-1. Analyze your intent
-2. Confirm understanding with you
-3. Generate appropriate agent configuration
-4. Execute the task
+```bash
+# 打开新的终端窗口，进入前端目录
+cd frontend
 
-Type `/exit` to quit, or `/new` to start a new session.
+# 安装依赖
+npm install
 
-## CLI Commands
+# 启动React开发服务器
+npm start
+```
 
-| Command | Description |
-|---------|-------------|
-| `fractalclaw config` | Interactive configuration wizard |
-| `fractalclaw run` | Start interactive session |
-| `fractalclaw task "your task"` | Execute a single task directly |
-| `fractalclaw list` | List all available agents |
-| `fractalclaw workspace` | Show workspace information |
-| `fractalclaw monitor` | Launch monitoring dashboard |
+前端应用将在 http://localhost:3000 启动
 
-## Programmatic Usage
+## 📚 API文档
+
+FastAPI自动生成交互式API文档：
+- **Swagger UI**: http://localhost:8000/docs
+- **ReDoc**: http://localhost:8000/redoc
+
+### API端点
+
+| 方法 | 端点 | 描述 |
+|------|------|------|
+| GET | `/todos` | 获取所有待办事项 |
+| POST | `/todos` | 创建新的待办事项 |
+| GET | `/todos/{id}` | 获取指定ID的待办事项 |
+| PUT | `/todos/{id}` | 更新指定ID的待办事项 |
+| DELETE | `/todos/{id}` | 删除指定ID的待办事项 |
+
+### 请求/响应示例
+
+#### 创建待办事项
+
+**请求:**
+```http
+POST /todos
+Content-Type: application/json
+
+{
+    "title": "学习React",
+    "description": "完成React基础教程",
+    "completed": false
+}
+```
+
+**响应:**
+```json
+{
+    "id": 1,
+    "title": "学习React",
+    "description": "完成React基础教程",
+    "completed": false,
+    "created_at": "2024-01-01T12:00:00",
+    "updated_at": "2024-01-01T12:00:00"
+}
+```
+
+#### 更新待办事项
+
+**请求:**
+```http
+PUT /todos/1
+Content-Type: application/json
+
+{
+    "completed": true
+}
+```
+
+**响应:**
+```json
+{
+    "id": 1,
+    "title": "学习React",
+    "description": "完成React基础教程",
+    "completed": true,
+    "created_at": "2024-01-01T12:00:00",
+    "updated_at": "2024-01-01T12:30:00"
+}
+```
+
+## 🎨 前端功能
+
+### 界面特性
+- 📱 响应式设计，支持移动端
+- 🎯 直观的用户界面
+- ✨ 平滑的动画效果
+- 🎨 现代化的UI设计
+
+### 操作说明
+1. **添加待办事项**: 在顶部表单输入标题和描述，点击"添加待办事项"
+2. **完成待办事项**: 点击待办事项前的复选框标记为已完成
+3. **编辑待办事项**: 点击"编辑"按钮修改待办事项内容
+4. **删除待办事项**: 点击"删除"按钮删除待办事项
+
+## 🔧 配置说明
+
+### 后端配置
+
+在 `backend/main.py` 中可以修改以下配置：
 
 ```python
-from pathlib import Path
-from fractalclaw.agent import AgentFactory, AgentContext
+# CORS配置
+allow_origins=["http://localhost:3000"]  # 允许的前端域名
 
-# Create factory
-factory = AgentFactory(config_dir=Path("configs"))
-
-# Create agent from YAML config
-coder = factory.create("coder")
-
-# Run task
-context = AgentContext(task="Implement a quick sort algorithm")
-result = await coder.run(context)
+# 服务器配置
+uvicorn.run(app, host="0.0.0.0", port=8000)  # 服务器地址和端口
 ```
 
-## Configuration
+### 前端配置
 
-### Global Settings (configs/settings.yaml)
+在 `frontend/package.json` 中配置代理：
 
-```yaml
-llm:
-  model: "gpt-4"
-  temperature: 0.7
-
-behavior:
-  max_iterations: 10
-  enable_planning: true
+```json
+{
+    "proxy": "http://localhost:8000"
+}
 ```
 
-### Agent Configuration (configs/agents/coder.yaml)
+## 🐛 常见问题
 
-```yaml
-name: "CodeAgent"
-description: "Code Expert Agent"
-role: specialist
+### 1. 端口被占用
+如果端口8000或3000被占用，可以修改启动命令：
+```bash
+# 后端使用其他端口
+uvicorn main:app --reload --port 8001
 
-llm:
-  temperature: 0.3
-
-system_prompt: |
-  You are a professional code assistant...
-
-tools:
-  - name: "read_file"
-    description: "Read file content"
-    parameters:
-      type: object
-      properties:
-        path:
-          type: string
-      required: ["path"]
+# 前端使用其他端口
+PORT=3001 npm start
 ```
 
-## Roadmap
+### 2. 数据库问题
+如果数据库出现问题，可以删除 `backend/todos.db` 文件，重启后端服务会自动重新创建。
 
-### Phase 1: Core Enhancement (1-2 weeks)
+### 3. 依赖安装失败
+确保Python和Node.js版本符合要求，并尝试使用国内镜像源：
+```bash
+# Python镜像
+pip install -r requirements.txt -i https://pypi.tuna.tsinghua.edu.cn/simple
 
-#### 1.1 Agent Intrinsic Properties Configuration
-**Status**: Planned
-**Priority**: P0
-
-为 Agent 配置创建固有属性功能，支持：
-- Agent 能力标签定义
-- Agent 专长领域声明
-- Agent 行为约束配置
-- Agent 资源限制设置
-
-```yaml
-intrinsic_properties:
-  capabilities: ["code_generation", "file_operations", "web_search"]
-  expertise: ["python", "javascript", "data_analysis"]
-  constraints:
-    max_file_size: 10MB
-    allowed_extensions: [".py", ".js", ".md"]
-  resource_limits:
-    max_memory: 512MB
-    max_execution_time: 300s
+# npm镜像
+npm install --registry=https://registry.npmmirror.com
 ```
 
-#### 1.2 Test Coverage Enhancement
-- [ ] Agent base class unit tests
-- [ ] Plan module tests
-- [ ] Memory system tests
-- [ ] Tools manager tests
-- [ ] Integration test cases
+## 📝 开发说明
 
-#### 1.3 CLI Enhancement
-- [ ] Interactive task input
-- [ ] Agent config hot reload
-- [ ] Real-time execution log
-- [ ] Result export
+### 后端开发
+- 使用FastAPI框架，支持异步请求处理
+- SQLite数据库，无需额外安装数据库服务
+- 自动生成API文档
+
+### 前端开发
+- 使用React函数组件和Hooks
+- Axios处理HTTP请求
+- CSS模块化样式
+
+## 📄 许可证
+
+本项目采用 MIT 许可证。
+
+## 👥 贡献
+
+欢迎提交Issue和Pull Request！
 
 ---
 
-### Phase 2: Visualization & Monitoring (2-4 weeks)
-
-#### 2.1 Fractal Progress Display Interface
-**Status**: Planned
-**Priority**: P1
-
-开发分形进度显示界面，能够直观看到处理流程：
-- 树状 Agent 结构可视化
-- 实时任务执行状态
-- 分形递归过程展示
-- 节点间通信可视化
-- 执行时间统计
-
-```
-┌─────────────────────────────────────────────────────────────┐
-│                    Fractal Progress View                     │
-├─────────────────────────────────────────────────────────────┤
-│                                                              │
-│  Root Agent ────────────────────────────────────── [RUNNING] │
-│    │                                                         │
-│    ├── Coordinator 1 ──────────────────────────── [DONE]     │
-│    │     │                                                    │
-│    │     ├── Worker 1 ─────────────────────────── [DONE]     │
-│    │     └── Worker 2 ─────────────────────────── [RUNNING]  │
-│    │                                                          │
-│    └── Coordinator 2 ──────────────────────────── [PENDING]  │
-│          │                                                    │
-│          └── Specialist ───────────────────────── [WAITING]  │
-│                                                              │
-│  Progress: ████████████░░░░░░░░ 60%  (6/10 tasks)           │
-│  Time: 45.2s | Iterations: 23 | Tools: 15                    │
-└─────────────────────────────────────────────────────────────┘
-```
-
-#### 2.2 ModelSelector Intelligence
-- [ ] Dynamic weight calculator
-- [ ] LLM task analyzer
-- [ ] Selection history learning
-
-#### 2.3 Built-in Tools Extension
-- [ ] Code execution sandbox
-- [ ] Web fetch tool
-- [ ] Database operations
-- [ ] Git operations
-
----
-
-### Phase 3: Security & Sandbox (4-6 weeks)
-
-#### 3.1 Agent Sandbox System
-**Status**: Planned
-**Priority**: P1
-
-开发沙箱功能，限制各个 Agent 访问权限，保证安全：
-- 文件系统隔离
-- 网络访问控制
-- 资源使用限制
-- 危险操作拦截
-- 权限继承机制
-
-```yaml
-sandbox:
-  file_system:
-    mode: "restricted"
-    allowed_paths:
-      - "${workspace}/src"
-      - "${workspace}/output"
-    denied_patterns:
-      - "*.env"
-      - "*.key"
-      - ".git/**"
-  
-  network:
-    enabled: true
-    allowed_domains:
-      - "api.openai.com"
-      - "github.com"
-    denied_ports: [22, 3306, 5432]
-  
-  execution:
-    max_cpu_percent: 50
-    max_memory_mb: 512
-    max_processes: 5
-    timeout_seconds: 300
-  
-  permissions:
-    allow_shell: false
-    allow_network: true
-    allow_file_write: true
-    allow_file_delete: false
-```
-
-#### 3.2 Memory System Enhancement
-- [ ] Vector-based memory retrieval
-- [ ] Memory importance evaluation
-- [ ] Cross-session persistence
-
-#### 3.3 Parallel Execution Optimization
-- [ ] Task parallel scheduling
-- [ ] Resource conflict handling
-- [ ] Deadlock detection
-
----
-
-### Phase 4: Ecosystem (6-8 weeks)
-
-#### 4.1 Agent Template Library
-- [ ] General agent templates
-- [ ] Domain-specific templates
-- [ ] Template marketplace
-
-#### 4.2 Tool Ecosystem
-- [ ] Tool development SDK
-- [ ] Third-party integration guide
-- [ ] Tool marketplace
-
-#### 4.3 Documentation
-- [ ] API reference
-- [ ] Developer guide
-- [ ] Best practices
-- [ ] Example projects
-
----
-
-## Priority Summary
-
-| Priority | Feature | Description |
-|----------|---------|-------------|
-| P0 | Agent Intrinsic Properties | Agent 固有属性配置 |
-| P0 | Test Coverage | 测试覆盖增强 |
-| P1 | Fractal Progress Display | 分形进度显示界面 |
-| P1 | Sandbox System | 沙箱安全系统 |
-| P1 | ModelSelector Intelligence | 模型选择智能化 |
-| P2 | Memory Enhancement | 记忆系统增强 |
-| P3 | Ecosystem Building | 生态建设 |
-
----
-
-## Milestones
-
-```
-v0.2.0 ─── Core Enhancement ─── Test coverage > 80%
-   │
-v0.3.0 ─── Visualization ─── Fractal progress display complete
-   │
-v0.4.0 ─── Security ─── Sandbox system complete
-   │
-v1.0.0 ─── Release ─── Documentation complete, ecosystem established
-```
-
-## License
-
-MIT
+**享受使用Todo应用！** 🎉
