@@ -1654,6 +1654,24 @@ If needs_subagents is false, set "agents" to [].
         }
 
 
+# 框架内部文件过滤常量
+_FRAMEWORK_EXCLUDE_DIRS = frozenset({
+    "memory", "output", "agents", "__pycache__",
+})
+
+_FRAMEWORK_EXCLUDE_FILES = frozenset({
+    "agent_config.yaml",
+    "runtime_agent.yaml",
+    "execution.log",
+    "delegation_log.jsonl",
+    "execution_waves.jsonl",
+})
+
+_FRAMEWORK_EXCLUDE_EXTENSIONS = frozenset({
+    ".pyc", ".pyo",
+})
+
+
 class BaseAgent(Agent):
     """Agent 的默认实现，提供完整的 Plan-ReAct 执行循环。"""
 
@@ -1690,6 +1708,14 @@ class BaseAgent(Agent):
             while True:
                 if plan_result.needs_subagents and plan_result.plan:
                     subtask_results = await self._execute_plan(context)
+                    # 聚合子 Agent 的文件产出到父 Agent workspace
+                    if subtask_results and self._workspace_path:
+                        _aggregation_report = await self._aggregate_child_outputs(
+                            subtask_results, context
+                        )
+                        self._write_aggregation_report(_aggregation_report)
+                    else:
+                        _aggregation_report = {}
                     execution_summary = self._collect_execution_summary(subtask_results)
                     first_failure = next((r for r in subtask_results if not r.success), None)
                     result = AgentResult(
@@ -1699,7 +1725,10 @@ class BaseAgent(Agent):
                         subtask_results=subtask_results,
                         iterations=self._iteration,
                         plan=plan_result.plan,
-                        metadata={"execution_summary": execution_summary},
+                        metadata={
+                            "execution_summary": execution_summary,
+                            "aggregation_summary": _aggregation_report.get("summary", {}),
+                        },
                         error=first_failure.error if first_failure else None,
                     )
                     if first_failure:
@@ -1772,6 +1801,205 @@ class BaseAgent(Agent):
                 iterations=self._iteration,
                 error=str(e),
             )
+
+    async def _aggregate_child_outputs(
+        self,
+        subtask_results: list["AgentResult"],
+        context: "AgentContext",
+    ) -> dict:
+        """聚合所有子 Agent workspace 中的文件产出到父 Agent workspace。
+
+        遍历 self._tree.children，将每个子 Agent workspace 中的项目文件
+        （排除框架内部文件）复制到父 Agent workspace 的对应相对路径。
+
+        Returns:
+            dict: 聚合报告，包含 aggregated_files、conflicts、skipped_files、summary
+        """
+        import json
+        import shutil
+        from datetime import datetime
+
+        report = {
+            "timestamp": datetime.now().isoformat(),
+            "parent_workspace": str(self._workspace_path) if self._workspace_path else "",
+            "aggregated_files": [],
+            "conflicts": [],
+            "skipped_files": [],
+            "summary": {"total_aggregated": 0, "total_conflicts": 0, "total_skipped": 0},
+        }
+
+        if not self._workspace_path or not self._workspace_manager:
+            return report
+
+        children = self._tree.children
+        if not children:
+            return report
+
+        parent_ws = self._workspace_path
+
+        for child in children:
+            child_ws = child.workspace_path
+            if not child_ws or not child_ws.exists():
+                continue
+
+            # 遍历子 Agent workspace 中的所有文件
+            for src_path in child_ws.rglob("*"):
+                if not src_path.is_file():
+                    continue
+
+                # 计算相对于子 Agent workspace 的相对路径
+                try:
+                    rel_path = src_path.relative_to(child_ws)
+                except ValueError:
+                    continue
+
+                # 过滤框架内部文件
+                parts = rel_path.parts
+                if any(part in _FRAMEWORK_EXCLUDE_DIRS for part in parts[:-1]):
+                    report["skipped_files"].append({
+                        "path": str(rel_path),
+                        "source_agent": child.name,
+                        "reason": "framework_internal_dir",
+                    })
+                    continue
+
+                if rel_path.name in _FRAMEWORK_EXCLUDE_FILES:
+                    report["skipped_files"].append({
+                        "path": str(rel_path),
+                        "source_agent": child.name,
+                        "reason": "framework_internal_file",
+                    })
+                    continue
+
+                if src_path.suffix in _FRAMEWORK_EXCLUDE_EXTENSIONS:
+                    report["skipped_files"].append({
+                        "path": str(rel_path),
+                        "source_agent": child.name,
+                        "reason": "framework_internal_extension",
+                    })
+                    continue
+
+                dst_path = parent_ws / rel_path
+
+                # 处理文件冲突
+                if dst_path.exists():
+                    conflict_resolved = self._resolve_file_conflict(
+                        src_path, dst_path, rel_path, child.name, report
+                    )
+                    if conflict_resolved:
+                        report["aggregated_files"].append({
+                            "source": str(src_path.relative_to(child_ws.parent.parent) if child_ws.parent.parent.exists() else src_path),
+                            "destination": str(rel_path),
+                            "source_agent": child.name,
+                            "action": "merged_or_replaced",
+                        })
+                else:
+                    # 无冲突，直接复制
+                    dst_path.parent.mkdir(parents=True, exist_ok=True)
+                    shutil.copy2(src_path, dst_path)
+                    report["aggregated_files"].append({
+                        "source": str(rel_path),
+                        "destination": str(rel_path),
+                        "source_agent": child.name,
+                        "action": "copied",
+                    })
+
+        report["summary"]["total_aggregated"] = len(report["aggregated_files"])
+        report["summary"]["total_conflicts"] = len(report["conflicts"])
+        report["summary"]["total_skipped"] = len(report["skipped_files"])
+
+        return report
+
+    def _resolve_file_conflict(
+        self,
+        src_path: "Path",
+        dst_path: "Path",
+        rel_path: "Path",
+        source_agent_name: str,
+        report: dict,
+    ) -> bool:
+        """处理文件冲突，返回 True 表示已处理（文件已更新），False 表示跳过。"""
+        import json
+        import shutil
+
+        filename = rel_path.name
+
+        # requirements.txt：合并依赖行，去重排序
+        if filename == "requirements.txt":
+            try:
+                existing_lines = set(dst_path.read_text(encoding="utf-8").splitlines())
+                new_lines = set(src_path.read_text(encoding="utf-8").splitlines())
+                merged = sorted(existing_lines | new_lines - {""})
+                dst_path.write_text("\n".join(merged) + "\n", encoding="utf-8")
+                report["conflicts"].append({
+                    "path": str(rel_path),
+                    "sources": [dst_path.name, source_agent_name],
+                    "resolution": "merged_requirements",
+                })
+                return True
+            except Exception:
+                pass
+
+        # package.json：合并 dependencies 和 devDependencies
+        if filename == "package.json":
+            try:
+                existing = json.loads(dst_path.read_text(encoding="utf-8"))
+                incoming = json.loads(src_path.read_text(encoding="utf-8"))
+                for key in ("dependencies", "devDependencies"):
+                    if key in incoming:
+                        existing.setdefault(key, {}).update(incoming[key])
+                dst_path.write_text(
+                    json.dumps(existing, ensure_ascii=False, indent=2) + "\n",
+                    encoding="utf-8",
+                )
+                report["conflicts"].append({
+                    "path": str(rel_path),
+                    "sources": [dst_path.name, source_agent_name],
+                    "resolution": "merged_package_json",
+                })
+                return True
+            except Exception:
+                pass
+
+        # 通用冲突：保留修改时间最新的版本
+        import shutil as _shutil
+        src_mtime = src_path.stat().st_mtime
+        dst_mtime = dst_path.stat().st_mtime
+        if src_mtime > dst_mtime:
+            _shutil.copy2(src_path, dst_path)
+            kept = source_agent_name
+            resolution = "kept_newest_incoming"
+        else:
+            kept = "existing"
+            resolution = "kept_newest_existing"
+
+        report["conflicts"].append({
+            "path": str(rel_path),
+            "sources": ["existing", source_agent_name],
+            "resolution": resolution,
+            "kept_source": kept,
+        })
+        return True
+
+    def _write_aggregation_report(self, report: dict) -> None:
+        """将聚合报告写入 output/aggregation_report.json。"""
+        import json
+
+        if not self._workspace_path:
+            return
+
+        output_dir = self._workspace_path / "output"
+        output_dir.mkdir(parents=True, exist_ok=True)
+
+        report_path = output_dir / "aggregation_report.json"
+        try:
+            report_path.write_text(
+                json.dumps(report, ensure_ascii=False, indent=2),
+                encoding="utf-8",
+            )
+        except Exception:
+            # 报告写入失败不应影响主流程
+            pass
 
     async def _run_workflow(
         self,
