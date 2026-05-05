@@ -2,7 +2,7 @@
 
 import asyncio
 
-from fractalclaw.agent.base import AgentConfig, AgentContext, AgentResult, AgentRole, BaseAgent, PlanResult, SubAgentRequirement
+from fractalclaw.agent.base import AgentConfig, AgentContext, AgentResult, AgentRole, BaseAgent, DelegationContext, PlanResult, SubAgentRequirement
 from fractalclaw.plan import Plan, Task, TaskPriority, TaskType
 from fractalclaw.scheduler.agent_workspace import AgentWorkspaceManager, WorkDocument
 
@@ -18,7 +18,7 @@ class StaticChildAgent(BaseAgent):
 
 class SharedRuntimeStaticChildAgent(BaseAgent):
     async def run(self, context: AgentContext) -> AgentResult:
-        assert self._delegation_runtime["delegation_count"] == 3
+        assert self._delegation_ctx.delegation_budget == 17
         return AgentResult(
             success=True,
             output=f"runtime:{context.task}",
@@ -154,7 +154,11 @@ def test_existing_child_uses_parent_shared_runtime(tmp_path):
                 role=AgentRole.COORDINATOR,
             )
         )
-        parent._delegation_runtime["delegation_count"] = 3
+        parent._delegation_ctx = DelegationContext(
+            delegation_budget=17,
+            branch_budget=3,
+            max_depth=5,
+        )
         parent_workspace = await workspace_manager.create_agent_workspace(parent)
         parent.set_workspace(parent_workspace, workspace_manager)
 
@@ -165,7 +169,7 @@ def test_existing_child_uses_parent_shared_runtime(tmp_path):
                 role=AgentRole.WORKER,
             )
         )
-        child._delegation_runtime["delegation_count"] = 0
+        child._delegation_ctx = parent._delegation_ctx
         child_workspace = await workspace_manager.create_agent_workspace(child, parent_workspace=parent_workspace)
         child.set_workspace(child_workspace, workspace_manager)
         parent.add_child(child)
@@ -181,6 +185,6 @@ def test_existing_child_uses_parent_shared_runtime(tmp_path):
         result = await parent._execute_subtask(task, AgentContext(task="top-level task"))
 
         assert result.success is True
-        assert child._delegation_runtime is parent._delegation_runtime
+        assert child._delegation_ctx.delegation_budget == 17
 
     asyncio.run(_run())

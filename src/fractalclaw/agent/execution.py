@@ -179,8 +179,9 @@ class DelegationGovernance:
         _task_text = (context.task + " " + (plan_result.reasoning or "")).lower()
         _has_keyword = any(kw in _task_text for kw in _delegation_keywords)
 
-        _agent_role_name = getattr(getattr(agent, 'config', None), 'role', None)
-        _is_root_or_coordinator = _agent_role_name in ("ROOT", "COORDINATOR") if _agent_role_name else False
+        _agent_config = getattr(getattr(agent, 'config', None), 'get_profile', None)
+        _profile_name = _agent_config().name if callable(_agent_config) else None
+        _is_root_or_coordinator = _profile_name in ("root", "coordinator") if _profile_name else False
 
         _is_multi_file = getattr(plan_result, 'estimated_files', 0) >= 2
         _has_modules = getattr(plan_result, 'has_multiple_modules', False)
@@ -208,16 +209,20 @@ class DelegationGovernance:
         parent_text = _normalize_text(task.description or context.task)
         child_text = _normalize_text(requirement.task_description)
         fingerprint = self.build_requirement_fingerprint(requirement, branch_path)
-        runtime = getattr(agent, "_delegation_runtime", {})
+        delegation_ctx = getattr(agent, "_delegation_ctx", None)
 
         if not requirement.delegation_allowed:
             return GovernanceDecision(False, "delegation_disabled", "Delegation disabled by plan.", fingerprint, branch_path)
         if depth > self.config.max_depth:
             return GovernanceDecision(False, "max_depth_reached", "Maximum delegation depth reached.", fingerprint, branch_path)
-        if runtime.get("delegation_count", 0) >= self.config.max_total_delegations:
-            return GovernanceDecision(False, "max_total_delegations_reached", "Maximum total delegations reached.", fingerprint, branch_path)
-        if runtime.get("branch_delegation_counts", {}).get(branch_path, 0) >= self.config.max_branch_delegations:
-            return GovernanceDecision(False, "max_branch_delegations_reached", "Maximum branch delegations reached.", fingerprint, branch_path)
+
+        if delegation_ctx is not None:
+            can_del, reason = delegation_ctx.can_delegate()
+            if not can_del:
+                return GovernanceDecision(False, reason, f"Delegation budget exhausted: {reason}", fingerprint, branch_path)
+            if delegation_ctx.is_duplicate(fingerprint):
+                return GovernanceDecision(False, "duplicate_fingerprint", "Delegated task was already attempted in this branch.", fingerprint, branch_path)
+
         if not child_text:
             return GovernanceDecision(False, "empty_split", "Delegated task description is empty.", fingerprint, branch_path)
         if (
@@ -226,8 +231,6 @@ class DelegationGovernance:
             and not requirement.expected_output.strip()
         ):
             return GovernanceDecision(False, "empty_split", "Delegated task does not shrink the parent task.", fingerprint, branch_path)
-        if fingerprint in runtime.get("fingerprints", set()):
-            return GovernanceDecision(False, "duplicate_fingerprint", "Delegated task was already attempted in this branch.", fingerprint, branch_path)
 
         return GovernanceDecision(True, fingerprint=fingerprint, branch_path=branch_path)
 
@@ -239,21 +242,11 @@ class DelegationGovernance:
         if not decision.allowed:
             return
 
-        runtime = getattr(agent, "_delegation_runtime", None)
-        if runtime is None:
-            runtime = {
-                "fingerprints": set(),
-                "delegation_count": 0,
-                "branch_delegation_counts": {},
-                "governance_rejections": 0,
-            }
-            agent._delegation_runtime = runtime
-
-        runtime["fingerprints"].add(decision.fingerprint)
-        runtime["delegation_count"] += 1
-        runtime["branch_delegation_counts"][decision.branch_path] = (
-            runtime["branch_delegation_counts"].get(decision.branch_path, 0) + 1
-        )
+        delegation_ctx = getattr(agent, "_delegation_ctx", None)
+        if delegation_ctx is not None:
+            agent._delegation_ctx = delegation_ctx.with_reserved(
+                decision.fingerprint, decision.branch_path
+            )
 
     def plan_wave(
         self,

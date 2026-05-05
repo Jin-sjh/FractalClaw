@@ -9,6 +9,7 @@ from .model_profile import (
     PricingInfo,
     get_default_model_name,
     get_default_registry,
+    get_fast_model_name,
     set_default_registry,
 )
 from .model_router import ModelRouter, RoutedModel, TASK_TYPE_ENV_KEYS
@@ -44,6 +45,7 @@ __all__ = [
     "PricingInfo",
     "get_default_model_name",
     "get_default_registry",
+    "get_fast_model_name",
     "set_default_registry",
     "ModelSelector",
     "SmartModelSelector",

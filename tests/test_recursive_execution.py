@@ -15,6 +15,7 @@ from fractalclaw.agent.base import (
     AgentResult,
     AgentRole,
     BaseAgent,
+    DelegationContext,
     PlanResult,
     SubAgentRequirement,
 )
@@ -82,7 +83,7 @@ def test_prepare_plan_result_collapses_no_benefit_split():
         AgentConfig(
             name="Parent",
             description="top-level task",
-            role=AgentRole.COORDINATOR,
+            role=AgentRole.WORKER,
             plan_config=PlanConfig(),
         )
     )
@@ -349,7 +350,7 @@ def test_direct_self_execution_without_tools_is_accepted():
 
 class SharedRuntimeChildAgent(BaseAgent):
     async def _plan(self, context: AgentContext) -> PlanResult:
-        assert self._delegation_runtime["delegation_count"] == 1
+        assert self._delegation_ctx.delegation_budget == 0
         return PlanResult(
             needs_subagents=False,
             self_execution_steps=["continue recursively"],
@@ -381,7 +382,11 @@ def test_child_run_preserves_shared_delegation_budget():
                 plan_config=PlanConfig(max_total_delegations=1),
             )
         )
-        parent._delegation_runtime["delegation_count"] = 1
+        parent._delegation_ctx = DelegationContext(
+            delegation_budget=0,
+            branch_budget=0,
+            max_depth=5,
+        )
 
         child = SharedRuntimeChildAgent(
             AgentConfig(
@@ -391,7 +396,7 @@ def test_child_run_preserves_shared_delegation_budget():
                 plan_config=PlanConfig(max_total_delegations=1),
             )
         )
-        child._delegation_runtime = parent._delegation_runtime
+        child._delegation_ctx = parent._delegation_ctx
 
         result = await child.run(
             AgentContext(
@@ -402,8 +407,7 @@ def test_child_run_preserves_shared_delegation_budget():
         )
 
         assert result.success is True
-        assert child._delegation_runtime["delegation_count"] == 1
-        assert child._delegation_runtime is parent._delegation_runtime
+        assert child._delegation_ctx.delegation_budget == 0
 
     asyncio.run(_run())
 

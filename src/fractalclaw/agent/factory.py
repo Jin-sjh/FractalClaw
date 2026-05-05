@@ -16,7 +16,7 @@ from fractalclaw.tools import ToolConfig
 from fractalclaw.tools.base import BaseTool
 from fractalclaw.tools.builtin import get_builtin_tools
 
-from .base import Agent, AgentConfig, AgentRole, BaseAgent, SubAgentRequirement
+from .base import Agent, AgentConfig, AgentProfile, AgentRole, BaseAgent, SubAgentRequirement
 from .loader import (
     AgentConfigData,
     ConfigLoader,
@@ -240,12 +240,12 @@ class AgentFactory:
         if tool_defs is not None:
             declared_tools = tool_defs
         else:
-            declared_tools = self._default_tool_defs_for_role(agent.config.role)
+            declared_tools = self._default_tool_defs_for_profile(agent.config.get_profile())
         for tool_def in declared_tools:
             self._attach_tool_definition(agent, tool_def)
 
-    def _default_tool_defs_for_role(self, role: AgentRole) -> list[dict[str, Any]]:
-        return [{"name": tool_name} for tool_name in self.ROLE_DEFAULT_TOOLS.get(role, [])]
+    def _default_tool_defs_for_profile(self, profile: AgentProfile) -> list[dict[str, Any]]:
+        return [{"name": tool_name} for tool_name in profile.tools]
 
     def _attach_tool_definition(
         self,
@@ -264,6 +264,8 @@ class AgentFactory:
             return
 
         handler = self._get_tool_handler(requested_name)
+        if handler is None:
+            return
         agent.register_tool(
             name=requested_name,
             description=tool_def.get("description", f"Tool: {requested_name}"),
@@ -315,13 +317,10 @@ class AgentFactory:
 
         return AliasedTool()
 
-    def _get_tool_handler(self, name: str) -> Callable:
-        from fractalclaw.tools.placeholder import create_placeholder_handler
-
+    def _get_tool_handler(self, name: str) -> Optional[Callable]:
         if name in self._tool_handlers:
             return self._tool_handlers[name]
-
-        return create_placeholder_handler(name)
+        return None
 
     def list_available(self) -> list[str]:
         """List available persisted agent ids."""
@@ -409,20 +408,20 @@ class AgentFactory:
         requirement: SubAgentRequirement,
         depth: int,
     ) -> tuple[dict[str, Any], Optional[SelectionResult]]:
-        role = self._infer_role(requirement.agent_type)
-        tool_names = self._resolve_runtime_tools(requirement, role)
-        task_profile = self._build_task_profile(requirement, role)
-        llm_data, selection = self._select_llm_for_runtime_child(parent_agent, role, task_profile)
-        behavior = self._build_runtime_behavior(role, task_profile, depth)
+        profile = self._infer_profile(requirement.agent_type)
+        tool_names = self._resolve_runtime_tools(requirement, profile)
+        task_profile = self._build_task_profile(requirement, profile, depth)
+        llm_data, selection = self._select_llm_for_runtime_child(parent_agent, profile, task_profile, depth)
+        behavior = self._build_runtime_behavior(profile, task_profile, depth)
         lineage = requirement.parameters.get("lineage", {})
 
         config = {
             "name": requirement.agent_name,
             "description": requirement.task_description,
-            "role": role.value,
+            "role": self._profile_to_role(profile).value,
             "llm": llm_data,
             "behavior": behavior,
-            "system_prompt": self._build_runtime_system_prompt(requirement, role),
+            "system_prompt": self._build_runtime_system_prompt(requirement, profile),
             "tools": [{"name": tool_name} for tool_name in tool_names],
             "metadata": {
                 "runtime_generated": True,
@@ -448,18 +447,27 @@ class AgentFactory:
         }
         return config, selection
 
-    def _infer_role(self, agent_type: str) -> AgentRole:
+    def _infer_profile(self, agent_type: str) -> AgentProfile:
         agent_type_lower = agent_type.lower()
         if "coord" in agent_type_lower:
-            return AgentRole.COORDINATOR
+            return AgentProfile.coordinator()
         if any(token in agent_type_lower for token in ["code", "coder", "research", "analyst", "special"]):
-            return AgentRole.SPECIALIST
-        return AgentRole.WORKER
+            return AgentProfile.specialist()
+        return AgentProfile.worker()
+
+    def _profile_to_role(self, profile: AgentProfile) -> AgentRole:
+        name_to_role = {
+            "root": AgentRole.ROOT,
+            "coordinator": AgentRole.COORDINATOR,
+            "worker": AgentRole.WORKER,
+            "specialist": AgentRole.SPECIALIST,
+        }
+        return name_to_role.get(profile.name, AgentRole.WORKER)
 
     def _resolve_runtime_tools(
         self,
         requirement: SubAgentRequirement,
-        role: AgentRole,
+        profile: AgentProfile,
     ) -> list[str]:
         requested = [
             self.BUILTIN_TOOL_ALIASES.get(tool_name, tool_name)
@@ -472,12 +480,13 @@ class AgentFactory:
         for key, tools in self.RUNTIME_TYPE_TOOLS.items():
             if key in agent_type_lower:
                 return tools.copy()
-        return self.ROLE_DEFAULT_TOOLS.get(role, ["read", "write", "edit", "bash"]).copy()
+        return profile.tools.copy()
 
     def _build_task_profile(
         self,
         requirement: SubAgentRequirement,
-        role: AgentRole,
+        profile: AgentProfile,
+        depth: int,
     ) -> TaskProfile:
         from fractalclaw.llm.task_classifier import classify_by_keywords, classification_to_analysis_dict
 
@@ -490,12 +499,14 @@ class AgentFactory:
             ]
         ).lower()
 
-        is_coordinator = role == AgentRole.COORDINATOR
+        is_coordinator = profile.name == "coordinator"
         result = classify_by_keywords(text, is_coordinator=is_coordinator)
 
         analysis = classification_to_analysis_dict(result)
         analysis["budget_sensitive"] = True
         analysis["estimated_tokens"] = 1200
+        analysis["depth"] = depth
+        analysis["max_depth"] = self._build_plan_config().max_depth
 
         if result.task_type in {"research", "reasoning"}:
             if result.complexity == "simple":
@@ -510,8 +521,9 @@ class AgentFactory:
     def _select_llm_for_runtime_child(
         self,
         parent_agent: Agent,
-        role: AgentRole,
+        profile: AgentProfile,
         task_profile: TaskProfile,
+        depth: int,
     ) -> tuple[dict[str, Any], Optional[SelectionResult]]:
         parent_llm = parent_agent.config.llm_config or self._build_llm_config({})
         selection: Optional[SelectionResult] = None
@@ -537,10 +549,20 @@ class AgentFactory:
             except Exception:
                 selection = None
 
-        if role == AgentRole.COORDINATOR:
+        if profile.model_preference == "strong":
             chosen_model = parent_llm.model
             chosen_provider = None
-            selection_reason = "coordinator_uses_parent_model"
+            selection_reason = "profile_requires_strong_model"
+
+        max_depth = self._build_plan_config().max_depth
+        decay_rate = 0.3
+        depth_factor = 1.0 - (depth / max(max_depth, 1)) * decay_rate
+        if depth_factor < 0.4 and profile.model_preference != "strong":
+            from fractalclaw.llm.model_profile import get_fast_model_name
+            fast_model = get_fast_model_name()
+            if fast_model:
+                chosen_model = fast_model
+                selection_reason = f"depth_decay(depth={depth}, factor={depth_factor:.2f})"
 
         temperature = 0.2 if task_profile.requires_code else 0.4 if task_profile.requires_reasoning else 0.6
         llm_data = {
@@ -557,30 +579,29 @@ class AgentFactory:
 
     def _build_runtime_behavior(
         self,
-        role: AgentRole,
+        profile: AgentProfile,
         task_profile: TaskProfile,
         depth: int,
     ) -> dict[str, Any]:
-        planning_enabled = depth < self._build_plan_config().max_depth and role != AgentRole.WORKER
-        if role == AgentRole.SPECIALIST and task_profile.complexity.value == "complex":
-            planning_enabled = True
+        max_depth = self._build_plan_config().max_depth
+        planning_enabled = depth < max_depth and profile.enable_planning
 
         return {
-            "max_iterations": 8 if task_profile.complexity.value == "simple" else 12,
+            "max_iterations": profile.max_iterations,
             "enable_planning": planning_enabled,
-            "enable_reflection": True,
+            "enable_reflection": profile.enable_reflection,
             "max_replan_attempts": 2,
         }
 
     def _build_runtime_system_prompt(
         self,
         requirement: SubAgentRequirement,
-        role: AgentRole,
+        profile: AgentProfile,
     ) -> str:
         expected_output = requirement.expected_output or "Provide a concrete execution result."
         return "\n".join(
             [
-                f"You are {requirement.agent_name}, a {role.value} agent in FractalClaw's recursive execution tree.",
+                f"You are {requirement.agent_name}, a {profile.name} agent in FractalClaw's recursive execution tree.",
                 "You must execute work with tools when tools are available.",
                 "If the task is still too complex and planning is enabled, decompose it into smaller delegated tasks.",
                 f"Primary task: {requirement.task_description}",

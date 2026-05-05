@@ -87,6 +87,36 @@ class AgentTree:
     def get_children_by_role(self, role: Any) -> list["Agent"]:
         return [child for child in self._children if child.config.role == role]
 
+    def push_context_to_child(self, child_name: str, context_data: dict[str, Any]) -> bool:
+        child = self.get_child_by_name(child_name)
+        if child is None:
+            return False
+        if hasattr(child, '_pending_context_updates'):
+            child._pending_context_updates.append(context_data)
+        else:
+            child._pending_context_updates = [context_data]
+        return True
+
+    def collect_child_result(self, child_name: str) -> Optional[Any]:
+        child = self.get_child_by_name(child_name)
+        if child is None:
+            return None
+        return getattr(child, '_last_result', None)
+
+    def broadcast_to_siblings(self, source_child_name: str, discovery: dict[str, Any]) -> int:
+        source = self.get_child_by_name(source_child_name)
+        if source is None:
+            return 0
+        count = 0
+        for child in self._children:
+            if child.name != source_child_name:
+                if hasattr(child, '_pending_context_updates'):
+                    child._pending_context_updates.append(discovery)
+                else:
+                    child._pending_context_updates = [discovery]
+                count += 1
+        return count
+
     def get_siblings(self) -> list["Agent"]:
         if self._parent is None:
             return []

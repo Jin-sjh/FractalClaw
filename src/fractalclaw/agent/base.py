@@ -42,6 +42,122 @@ class AgentRole(Enum):
 
 
 @dataclass
+class ErrorReport:
+    error_type: str
+    message: str
+    recoverable: bool = True
+    retry_recommended: bool = False
+    replan_recommended: bool = False
+    propagate: bool = False
+    suggestion: str = ""
+
+
+class ErrorClassifier:
+    RETRYABLE_PATTERNS = ["timeout", "connection", "network", "rate_limit", "429", "503"]
+    REPLAN_PATTERNS = ["invalid", "not found", "does not exist", "permission denied", "access denied"]
+    PROPAGATE_PATTERNS = ["out of memory", "fatal", "critical", "unrecoverable"]
+
+    @classmethod
+    def classify(cls, error: str) -> ErrorReport:
+        error_lower = error.lower()
+        for pattern in cls.PROPAGATE_PATTERNS:
+            if pattern in error_lower:
+                return ErrorReport(
+                    error_type="unrecoverable",
+                    message=error,
+                    recoverable=False,
+                    propagate=True,
+                    suggestion="Fatal error, propagate to parent",
+                )
+        for pattern in cls.RETRYABLE_PATTERNS:
+            if pattern in error_lower:
+                return ErrorReport(
+                    error_type="transient",
+                    message=error,
+                    recoverable=True,
+                    retry_recommended=True,
+                    suggestion="Retry with backoff",
+                )
+        for pattern in cls.REPLAN_PATTERNS:
+            if pattern in error_lower:
+                return ErrorReport(
+                    error_type="structural",
+                    message=error,
+                    recoverable=True,
+                    replan_recommended=True,
+                    suggestion="Replan with adjusted approach",
+                )
+        return ErrorReport(
+            error_type="unknown",
+            message=error,
+            recoverable=True,
+            replan_recommended=True,
+            suggestion="Default to replan attempt",
+        )
+
+
+@dataclass
+class AgentProfile:
+    name: str = "default"
+    tools: list[str] = field(default_factory=lambda: ["read", "write", "edit", "bash", "search"])
+    model_preference: str = "balanced"
+    can_delegate: bool = True
+    max_iterations: int = 10
+    enable_reflection: bool = True
+    enable_planning: bool = True
+
+    @classmethod
+    def from_role(cls, role: AgentRole) -> "AgentProfile":
+        mapping = {
+            AgentRole.ROOT: cls.root(),
+            AgentRole.COORDINATOR: cls.coordinator(),
+            AgentRole.WORKER: cls.worker(),
+            AgentRole.SPECIALIST: cls.specialist(),
+        }
+        return mapping.get(role, cls.worker())
+
+    @classmethod
+    def root(cls) -> "AgentProfile":
+        return cls(
+            name="root",
+            tools=["read", "write", "edit", "search", "find_files", "bash", "tavily_search", "llm_generate"],
+            model_preference="strong",
+            can_delegate=True,
+            max_iterations=10,
+        )
+
+    @classmethod
+    def coordinator(cls) -> "AgentProfile":
+        return cls(
+            name="coordinator",
+            tools=["read", "write", "edit", "search", "find_files", "bash", "tavily_search", "llm_generate"],
+            model_preference="strong",
+            can_delegate=True,
+            max_iterations=10,
+        )
+
+    @classmethod
+    def worker(cls) -> "AgentProfile":
+        return cls(
+            name="worker",
+            tools=["read", "write", "edit", "bash", "search", "find_files"],
+            model_preference="balanced",
+            can_delegate=True,
+            max_iterations=10,
+        )
+
+    @classmethod
+    def specialist(cls) -> "AgentProfile":
+        return cls(
+            name="specialist",
+            tools=["read", "write", "edit", "bash", "search", "find_files"],
+            model_preference="balanced",
+            can_delegate=True,
+            max_iterations=10,
+        )
+
+
+@dataclass
 class SubAgentRequirement:
     agent_name: str
     agent_type: str
@@ -70,6 +186,7 @@ class AgentConfig:
     name: str = "Agent"
     description: str = ""
     role: AgentRole = AgentRole.WORKER
+    profile: Optional[AgentProfile] = None
     llm_config: Optional[LLMConfig] = None
     memory_config: Optional[MemoryConfig] = None
     tool_config: Optional[ToolConfig] = None
@@ -80,6 +197,67 @@ class AgentConfig:
     system_prompt: Optional[str] = None
     workflow: Optional[WorkflowConfig] = None
 
+    def get_profile(self) -> AgentProfile:
+        if self.profile is not None:
+            return self.profile
+        return AgentProfile.from_role(self.role)
+
+
+@dataclass
+class DelegationContext:
+    depth: int = 0
+    branch_path: str = "root"
+    seen_fingerprints: frozenset[str] = frozenset()
+    delegation_budget: int = 20
+    branch_budget: int = 6
+    max_depth: int = 5
+    governance_rejections: int = 0
+
+    def child_context(self, fingerprint: str, task_id: str) -> "DelegationContext":
+        return DelegationContext(
+            depth=self.depth + 1,
+            branch_path=f"{self.branch_path}/{task_id}",
+            seen_fingerprints=self.seen_fingerprints | {fingerprint},
+            delegation_budget=self.delegation_budget - 1,
+            branch_budget=self.branch_budget - 1,
+            max_depth=self.max_depth,
+            governance_rejections=self.governance_rejections,
+        )
+
+    def can_delegate(self) -> tuple[bool, str]:
+        if self.depth >= self.max_depth:
+            return False, "max_depth_reached"
+        if self.delegation_budget <= 0:
+            return False, "delegation_budget_exhausted"
+        if self.branch_budget <= 0:
+            return False, "branch_budget_exhausted"
+        return True, "allowed"
+
+    def is_duplicate(self, fingerprint: str) -> bool:
+        return fingerprint in self.seen_fingerprints
+
+    def with_rejection(self) -> "DelegationContext":
+        return DelegationContext(
+            depth=self.depth,
+            branch_path=self.branch_path,
+            seen_fingerprints=self.seen_fingerprints,
+            delegation_budget=self.delegation_budget,
+            branch_budget=self.branch_budget,
+            max_depth=self.max_depth,
+            governance_rejections=self.governance_rejections + 1,
+        )
+
+    def with_reserved(self, fingerprint: str, branch_path: str) -> "DelegationContext":
+        return DelegationContext(
+            depth=self.depth,
+            branch_path=self.branch_path,
+            seen_fingerprints=self.seen_fingerprints | {fingerprint},
+            delegation_budget=self.delegation_budget - 1,
+            branch_budget=self.branch_budget - 1,
+            max_depth=self.max_depth,
+            governance_rejections=self.governance_rejections,
+        )
+
 
 @dataclass
 class AgentContext:
@@ -89,6 +267,7 @@ class AgentContext:
     plan_id: Optional[str] = None
     task_id: Optional[str] = None
     metadata: dict[str, Any] = field(default_factory=dict)
+    delegation_ctx: Optional[DelegationContext] = None
 
 
 @dataclass
@@ -130,12 +309,11 @@ class Agent(ABC):
         self._tools = tool_manager or ToolManager(config.tool_config or ToolConfig())
         self._planner = plan_manager or PlanManager(config.plan_config or PlanConfig())
         self._tree = AgentTree(self)
-        self._delegation_runtime = {
-            "fingerprints": set(),
-            "delegation_count": 0,
-            "branch_delegation_counts": {},
-            "governance_rejections": 0,
-        }
+        self._delegation_ctx = DelegationContext(
+            max_depth=config.plan_config.max_depth if config.plan_config else 5,
+            delegation_budget=config.plan_config.max_total_delegations if config.plan_config else 20,
+            branch_budget=config.plan_config.max_branch_delegations if config.plan_config else 6,
+        )
         self._governance = DelegationGovernance(self._planner.config)
         self._plan_executor = PlanExecutionEngine(self._planner.config, self._governance)
 
@@ -203,7 +381,14 @@ class Agent(ABC):
             f"所有文件操作（读取、写入、搜索等）应使用相对于此工作空间的路径。\n"
             f"例如：写入文件时使用 'backend/main.py' 而非绝对路径，"
             f"系统会自动将其解析为 {path / 'backend/main.py'}。\n"
-            f"执行命令时，默认工作目录也是此工作空间。"
+            f"执行命令时，默认工作目录也是此工作空间。\n\n"
+            f"## ⚠️ 严禁行为\n"
+            f"- 禁止启动任何长驻进程或开发服务器，例如：\n"
+            f"  uvicorn、npm run dev、yarn start/dev、flask run、gunicorn、\n"
+            f"  webpack --watch、vite、next dev、python -m http.server 等。\n"
+            f"  这类命令会永久阻塞 bash 工具并导致超时。\n"
+            f"- 你的职责是生成所有必要的文件。服务器的启动由用户在任务完成后手动执行。\n"
+            f"- 如果需要验证代码语法，可以使用 python -c 'import ast; ast.parse(open(\"file.py\").read())' 等非阻塞命令。"
         )
         if self.config.system_prompt:
             self.config.system_prompt += workspace_hint
@@ -353,7 +538,7 @@ class Agent(ABC):
                 constraints=self._extract_constraints(requirement),
             )
 
-        child._delegation_runtime = self._delegation_runtime
+        child._delegation_ctx = self._delegation_ctx
 
         if child.get_parent() is None:
             self.add_child(child)
@@ -379,9 +564,7 @@ class Agent(ABC):
 
         return child
     
-    def _get_tool_handler(self, tool_name: str) -> Callable:
-        from fractalclaw.tools.placeholder import create_placeholder_handler
-
+    def _get_tool_handler(self, tool_name: str) -> Optional[Callable]:
         tool = self._tools.get_tool(tool_name)
         if tool:
             async def execute_tool(**kwargs):
@@ -390,18 +573,43 @@ class Agent(ABC):
 
             return execute_tool
 
-        return create_placeholder_handler(tool_name)
+        return None
 
     def _plan_from_workflow(self, context: AgentContext) -> PlanResult:
-        """根据配置中的workflow直接生成PlanResult，跳过LLM规划。"""
         workflow = self.config.workflow
         self_execution_steps = [
             f"[Step {s.step}] {s.name}: {s.action}"
             for s in workflow.steps
         ]
 
+        root_task = Task(
+            id="root",
+            name=context.task[:50],
+            description=context.task,
+            task_type=TaskType.COMPOSITE,
+        )
+        for i, step in enumerate(workflow.steps):
+            subtask = self._planner.create_task(
+                name=step.name,
+                description=f"[Step {step.step}] {step.name}: {step.action}",
+                task_type=TaskType.ATOMIC,
+                priority=TaskPriority(i + 1),
+            )
+            subtask.metadata["workflow_step"] = True
+            subtask.metadata["step_number"] = step.step
+            subtask.metadata["action"] = step.action
+            subtask.metadata["description"] = step.description
+            root_task.subtasks.append(subtask)
+
+        plan = Plan(
+            id=self._planner._generate_plan_id(),
+            name=f"Workflow: {workflow.name}",
+            description=context.task,
+            root_task=root_task,
+        )
+
         return PlanResult(
-            plan=None,
+            plan=plan,
             complexity=TaskComplexity.MEDIUM,
             needs_subagents=False,
             self_execution_steps=self_execution_steps,
@@ -409,12 +617,11 @@ class Agent(ABC):
         )
 
     def _reset_recursive_runtime(self) -> None:
-        self._delegation_runtime = {
-            "fingerprints": set(),
-            "delegation_count": 0,
-            "branch_delegation_counts": {},
-            "governance_rejections": 0,
-        }
+        self._delegation_ctx = DelegationContext(
+            max_depth=self._planner.config.max_depth,
+            delegation_budget=self._planner.config.max_total_delegations,
+            branch_budget=self._planner.config.max_branch_delegations,
+        )
 
 
     # ── Two-phase planning ────────────────────────────────────────────────────
@@ -445,7 +652,7 @@ Task:
 {context.task}
 
 Context:
-- Your role: {self.config.role.value}
+- Your profile: {self.config.get_profile().name}
 - Current delegation depth: {context.depth} / {self._planner.config.max_depth}
 - Existing child agents: {[c.name for c in self._tree.children]}
 
@@ -570,73 +777,6 @@ If needs_subagents is false, set "agents" to [].
 
     # ── End two-phase planning ────────────────────────────────────────────────
 
-    def _is_small_context_model(self) -> bool:
-        if not self._llm:
-            return False
-        ctx = getattr(self._llm, "context_window", None) or getattr(self._llm, "max_context", None)
-        return ctx is not None and ctx <= 8192
-
-    def _planning_output_contract(self) -> str:
-        if self._is_small_context_model():
-            return """CRITICAL RULES when needs_subagents is true:
-- You MUST include BOTH "subagent_requirements" AND "subtasks" — omitting either will cause delegation to fail.
-- Each subtask's "assigned_agent" MUST exactly match an "agent_name" in subagent_requirements.
-
-"subagent_requirements": [{"agent_name": "ExactName", "agent_type": "specialist type", "task_description": "task", "required_tools": ["tool1"], "expected_output": "output", "parallel_safe": false, "write_scope": [], "read_scope": [], "delegation_allowed": true, "parameters": {}}]
-
-"subtasks": [{"name": "name", "description": "desc", "type": "atomic", "priority": 1, "dependencies": [], "assigned_agent": "ExactName", "parallel_safe": false, "write_scope": [], "read_scope": [], "delegation_allowed": true}]
-
-If needs_subagents is false, include "self_execution_steps": ["step 1", "step 2"]
-
-Defaults: parallel_safe=false, write_scope=[], read_scope=[], delegation_allowed=true"""
-
-        return """CRITICAL RULES when needs_subagents is true:
-- You MUST include BOTH "subagent_requirements" AND "subtasks" in your response.
-- Omitting either field will cause the entire delegation to silently fall back to self-execution.
-- Each entry in "subtasks" MUST have an "assigned_agent" value that EXACTLY matches an "agent_name" in "subagent_requirements".
-- There must be a 1-to-1 correspondence: every subtask maps to one requirement, every requirement maps to at least one subtask.
-
-"subagent_requirements" (REQUIRED when needs_subagents=true):
-   [
-     {
-       "agent_name": "ExactAgentName",
-       "agent_type": "specialist type (e.g., coder, researcher, analyst)",
-       "task_description": "specific task for this subagent",
-       "required_tools": ["tool1", "tool2"],
-       "expected_output": "what this subagent should produce",
-       "parallel_safe": true | false,
-       "write_scope": ["path/or/resource"],
-       "read_scope": ["path/or/resource"],
-       "delegation_allowed": true | false,
-       "parameters": {}
-     }
-   ]
-
-"subtasks" (REQUIRED when needs_subagents=true — must pair with subagent_requirements above):
-   [
-     {
-       "name": "subtask name",
-       "description": "detailed description",
-       "type": "atomic" | "composite",
-       "priority": 1-3,
-       "dependencies": [],
-       "assigned_agent": "ExactAgentName",
-       "parallel_safe": true | false,
-       "write_scope": ["path/or/resource"],
-       "read_scope": ["path/or/resource"],
-       "delegation_allowed": true | false
-     }
-   ]
-
-If needs_subagents is false, include "self_execution_steps":
-   ["step 1 description", "step 2 description", ...]
-
-Use conservative defaults when unsure:
-- parallel_safe=false
-- write_scope=[]
-- read_scope=[]
-- delegation_allowed=true"""
-
     def _finalize_plan_result(
         self,
         plan_result: PlanResult,
@@ -693,7 +833,7 @@ Use conservative defaults when unsure:
                 if result.metadata.get("executed_in_parallel")
             ),
             "child_failures": sum(1 for result in subtask_results if not result.success),
-            "governance_rejections": self._delegation_runtime["governance_rejections"],
+            "governance_rejections": self._delegation_ctx.governance_rejections,
             "replan_count": self._replan_count,
         }
 
@@ -737,34 +877,6 @@ Use conservative defaults when unsure:
             # Single-agent path: ask LLM for self-execution steps only.
             plan_result = await self._plan_self_execution(context, phase1["reasoning"])
         # ── End two-phase planning ────────────────────────────────────────────
-
-        # Detect if _parse_plan_response itself silently downgraded delegation.
-        if not plan_result.needs_subagents and plan_result.reasoning.startswith("[AUTO_DOWNGRADED]"):
-            emit_agent_event(
-                EventType.DELEGATION_DOWNGRADED,
-                self,
-                message="Plan downgraded inside _parse_plan_response (LLM output was incomplete)",
-                metadata={
-                    "original_needs_subagents": True,
-                    "final_needs_subagents": False,
-                    "reasoning": plan_result.reasoning,
-                    "subagent_count": len(plan_result.subagent_requirements),
-                },
-            )
-
-        # Detect intent correction (false→true).
-        if plan_result.needs_subagents and plan_result.reasoning.startswith("[INTENT_CORRECTED]"):
-            emit_agent_event(
-                EventType.DELEGATION_DOWNGRADED,
-                self,
-                message="Plan intent corrected (needs_subagents overridden false→true)",
-                metadata={
-                    "original_needs_subagents": False,
-                    "final_needs_subagents": True,
-                    "reasoning": plan_result.reasoning,
-                    "subagent_count": len(plan_result.subagent_requirements),
-                },
-            )
 
         original_needs_subagents = plan_result.needs_subagents
         plan_result = self._finalize_plan_result(plan_result, context)
@@ -850,192 +962,6 @@ Respond with ONLY this JSON (no markdown fences):
             reasoning=phase1_reasoning,
         )
 
-    async def _parse_plan_response(self, response: str, context: AgentContext) -> PlanResult:
-        from fractalclaw.llm.response_parser import extract_json_from_llm_response
-
-        data = extract_json_from_llm_response(response)
-        if data is None:
-            return PlanResult(
-                complexity=TaskComplexity.SIMPLE,
-                needs_subagents=False,
-                self_execution_steps=[context.task],
-                reasoning="Failed to parse LLM response, defaulting to simple self-execution",
-            )
-
-        complexity_str = data.get("complexity", "simple")
-        try:
-            complexity = TaskComplexity(complexity_str)
-        except ValueError:
-            complexity = TaskComplexity.SIMPLE
-
-        needs_subagents = data.get("needs_subagents", False)
-        reasoning = data.get("reasoning", "")
-
-        subagent_requirements = []
-        for req in data.get("subagent_requirements", []):
-            subagent_requirements.append(
-                SubAgentRequirement(
-                    agent_name=req.get("agent_name", ""),
-                    agent_type=req.get("agent_type", "worker"),
-                    task_description=req.get("task_description", ""),
-                    required_tools=req.get("required_tools", []),
-                    expected_output=req.get("expected_output", ""),
-                    parallel_safe=bool(req.get("parallel_safe", False)),
-                    write_scope=list(req.get("write_scope", []) or []),
-                    read_scope=list(req.get("read_scope", []) or []),
-                    delegation_allowed=bool(req.get("delegation_allowed", True)),
-                    parameters=req.get("parameters", {}),
-                )
-            )
-
-        self_execution_steps = data.get("self_execution_steps", [])
-
-        plan = None
-        tasks_data = data.get("subtasks") or data.get("tasks", [])
-
-        # ── Intent inference ──────────────────────────────────────────────────
-        # LLMs sometimes write needs_subagents=false while simultaneously
-        # populating subagent_requirements / subtasks, or while describing
-        # delegation in their reasoning.  Treat the *content* of the response
-        # as the ground truth and override the boolean field when the signals
-        # are unambiguous.
-        if not needs_subagents:
-            _delegation_signals: list[str] = []
-
-            # Signal 1: LLM populated subagent_requirements
-            if subagent_requirements:
-                _delegation_signals.append(
-                    f"subagent_requirements has {len(subagent_requirements)} entries"
-                )
-
-            # Signal 2: LLM populated subtasks with assigned_agent fields
-            _assigned_tasks = [
-                td for td in tasks_data
-                if td.get("assigned_agent")
-            ] if tasks_data else []
-            if _assigned_tasks:
-                _delegation_signals.append(
-                    f"subtasks has {len(_assigned_tasks)} entries with assigned_agent"
-                )
-
-            # Signal 3: reasoning text explicitly describes delegation intent
-            _delegation_keywords = [
-                "delegat", "child agent", "subagent", "sub-agent",
-                "specialized agent", "specialist agent",
-                "子agent", "子 agent", "委派", "分配给",
-            ]
-            _reasoning_lower = reasoning.lower()
-            _matched_kw = [kw for kw in _delegation_keywords if kw in _reasoning_lower]
-            if _matched_kw:
-                _delegation_signals.append(
-                    f"reasoning mentions delegation keywords: {_matched_kw}"
-                )
-
-            if _delegation_signals:
-                needs_subagents = True
-                reasoning = (
-                    f"[INTENT_CORRECTED] needs_subagents overridden false→true "
-                    f"based on signals: {'; '.join(_delegation_signals)}. "
-                    f"Original reasoning: {reasoning}"
-                )
-        # ── End intent inference ──────────────────────────────────────────────
-
-        # If needs_subagents=true but subtasks are missing, auto-synthesize them from
-        # subagent_requirements so that a missing "subtasks" field doesn't silently
-        # downgrade delegation to self-execution.
-        if needs_subagents and subagent_requirements and not tasks_data:
-            tasks_data = [
-                {
-                    "name": req.agent_name,
-                    "description": req.task_description,
-                    "type": "atomic",
-                    "priority": 2,
-                    "dependencies": [],
-                    "assigned_agent": req.agent_name,
-                    "parallel_safe": req.parallel_safe,
-                    "write_scope": req.write_scope,
-                    "read_scope": req.read_scope,
-                    "delegation_allowed": req.delegation_allowed,
-                }
-                for req in subagent_requirements
-            ]
-
-        if tasks_data and needs_subagents:
-            root_task = Task(
-                id="root",
-                name=context.task[:50],
-                description=context.task,
-                task_type=TaskType.COMPOSITE,
-            )
-
-            # First pass: collect all task IDs that will actually be created,
-            # so we can filter out dependency references that don't exist.
-            # LLMs often write dependency IDs that don't match the generated UUIDs.
-            _raw_task_ids: set[str] = set()
-            _temp_tasks = []
-            for i, td in enumerate(tasks_data):
-                subtask = self._planner.create_task(
-                    name=td.get("name", f"Subtask {i + 1}"),
-                    description=td.get("description", ""),
-                    task_type=TaskType(td.get("type", "atomic")),
-                    priority=TaskPriority(td.get("priority", 2)),
-                    dependencies=[],  # defer dependency wiring to second pass
-                )
-                subtask.assigned_agent = td.get("assigned_agent")
-                subtask.metadata["parallel_safe"] = bool(td.get("parallel_safe", False))
-                subtask.metadata["write_scope"] = list(td.get("write_scope", []) or [])
-                subtask.metadata["read_scope"] = list(td.get("read_scope", []) or [])
-                subtask.metadata["delegation_allowed"] = bool(td.get("delegation_allowed", True))
-                subtask.metadata["_raw_deps"] = td.get("dependencies", [])
-                _raw_task_ids.add(subtask.id)
-                _temp_tasks.append(subtask)
-
-            # Second pass: wire dependencies, dropping any IDs that don't exist.
-            for subtask in _temp_tasks:
-                raw_deps = subtask.metadata.pop("_raw_deps", [])
-                subtask.dependencies = [d for d in raw_deps if d in _raw_task_ids]
-                root_task.subtasks.append(subtask)
-
-            plan = Plan(
-                id=self._planner._generate_plan_id(),
-                name=f"Plan for: {context.task[:30]}",
-                description=context.task,
-                root_task=root_task,
-            )
-
-            is_valid, errors = self._planner.validate_plan(plan)
-            if not is_valid:
-                # Attempt self-repair: clear all dependencies and re-validate.
-                # This handles cases where LLM wrote dependency IDs that still
-                # don't match after the first-pass filter (e.g. depth violations).
-                for subtask in root_task.subtasks:
-                    subtask.dependencies = []
-                is_valid, errors = self._planner.validate_plan(plan)
-                if not is_valid:
-                    plan = None
-
-        if needs_subagents and (not subagent_requirements or not plan):
-            # Log the specific reason so it's visible in events rather than silently downgrading.
-            if not subagent_requirements:
-                downgrade_reason = "needs_subagents=true but subagent_requirements is empty"
-            else:
-                downgrade_reason = (
-                    "needs_subagents=true but plan could not be built from subtasks "
-                    "(subtasks may be missing or failed validation)"
-                )
-            needs_subagents = False
-            self_execution_steps = self_execution_steps or [context.task]
-            reasoning = f"[AUTO_DOWNGRADED] {reasoning} | Reason: {downgrade_reason}"
-
-        return PlanResult(
-            plan=plan,
-            complexity=complexity,
-            needs_subagents=needs_subagents,
-            subagent_requirements=subagent_requirements,
-            self_execution_steps=self_execution_steps,
-            reasoning=reasoning,
-        )
-
     async def _execute_plan(self, context: AgentContext) -> list[AgentResult]:
         """执行计划：按 wave 调度 ready leaf subtasks。"""
         if not self._current_plan:
@@ -1073,7 +999,7 @@ Respond with ONLY this JSON (no markdown fences):
         task.metadata["branch_path"] = decision.branch_path
 
         if not decision.allowed:
-            self._delegation_runtime["governance_rejections"] += 1
+            self._delegation_ctx = self._delegation_ctx.with_rejection()
             task.metadata["delegation_skipped"] = decision.reason_code
             task.metadata["governance_reason"] = decision.reason_code
             emit_agent_event(
@@ -1164,7 +1090,7 @@ Respond with ONLY this JSON (no markdown fences):
     async def _execute_delegated_task(
         self, child: "Agent", task: Task, context: AgentContext
     ) -> AgentResult:
-        child._delegation_runtime = self._delegation_runtime
+        child._delegation_ctx = self._delegation_ctx
         sub_ctx = AgentContext(
             task=task.description,
             parent_id=self._id,
@@ -1401,20 +1327,6 @@ Reflect: 1) Was the goal achieved? 2) What could be improved? 3) Any follow-up a
 
     async def _evaluate_execution(self, result: AgentResult, context: AgentContext) -> tuple[bool, str]:
         """评估执行结果是否达到目标。"""
-        placeholder_indicators = ["[ERROR]", "is not available", "No real implementation"]
-        if result.tool_calls:
-            all_placeholder = True
-            for tc in result.tool_calls:
-                tc_result = str(tc.result) if tc.result else ""
-                if not any(indicator in tc_result for indicator in placeholder_indicators):
-                    all_placeholder = False
-                    break
-            if all_placeholder and result.tool_calls:
-                return False, (
-                    "All tool calls were executed by placeholder tools with no real implementation. "
-                    "The task requires actual tools that are not available to this agent."
-                )
-
         if not result.tool_calls and not result.subtask_results:
             execution_mode = result.metadata.get("execution_mode")
             if execution_mode in {"self", "workflow"} and result.success and result.output.strip():
@@ -1455,6 +1367,45 @@ Reflect: 1) Was the goal achieved? 2) What could be improved? 3) Any follow-up a
                 f"Treating as success — user should install dependencies manually."
             )
         # ── End network error detection ───────────────────────────────────────
+
+        # ── Long-running server/process timeout detection ─────────────────────
+        # Commands like "uvicorn", "npm run dev", "yarn start", "flask run" are
+        # long-running processes that will always time out in a bash tool.
+        # If the ONLY failures are these server-start commands, treat the task as
+        # successful — the files were created; the user starts the server manually.
+        _server_start_indicators = [
+            "uvicorn", "npm run dev", "npm start", "yarn start", "yarn dev",
+            "flask run", "gunicorn", "node server", "python -m http.server",
+            "webpack --watch", "vite", "next dev",
+        ]
+        _server_timeout_fail_count = sum(
+            1 for tc in result.tool_calls
+            if tc.name == "bash"
+            and "timed out" in (tc.error or "").lower()
+            and any(ind in (tc.result.metadata.get("command", "") if tc.result and hasattr(tc.result, "metadata") else "")
+                    or ind in str(tc.result or "")
+                    for ind in _server_start_indicators)
+        )
+        # Also catch via tool args stored in the log
+        _server_timeout_fail_count_v2 = sum(
+            1 for tc in result.tool_calls
+            if tc.name == "bash"
+            and "timed out" in str(tc.error or "").lower()
+            and any(ind in str(getattr(tc, "args", {}) or {}) for ind in _server_start_indicators)
+        )
+        _server_timeout_count = max(_server_timeout_fail_count, _server_timeout_fail_count_v2)
+        _non_server_fails = sum(
+            1 for tc in result.tool_calls
+            if tc.error and "timed out" not in str(tc.error).lower()
+        )
+        if _server_timeout_count > 0 and _non_server_fails == 0 and _write_success_count > 0:
+            return True, (
+                f"Server start command(s) timed out ({_server_timeout_count} command(s)), "
+                f"but this is expected — long-running servers cannot be started inside a bash tool. "
+                f"{_write_success_count} file(s) were written successfully. "
+                f"Treating as success — user should start the server manually."
+            )
+        # ── End server timeout detection ──────────────────────────────────────
 
         failed_tool_summary = []
         for tc in result.tool_calls:
@@ -1556,6 +1507,11 @@ IMPORTANT RULES FOR REPLANNING:
 6. ENVIRONMENT COMMANDS: If bash commands like "pwd", "ls", "ls -la" failed with "not recognized",
    this is a Windows environment. Do NOT use Unix commands. Use the "write" tool to create files directly
    instead of using bash for file operations.
+7. LONG-RUNNING SERVER COMMANDS: NEVER start a development server or long-running process as part of
+   a task (e.g., uvicorn, npm run dev, yarn start, flask run, gunicorn, webpack --watch, vite, next dev).
+   These commands block indefinitely and will always time out. The task is complete once the files are
+   written. Leave server startup to the user. If a previous attempt timed out on a server command,
+   do NOT retry it — mark the task as done.
 
 Based on the above, create a NEW and IMPROVED execution plan.
 Respond with ONLY this JSON (no markdown fences):

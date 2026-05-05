@@ -335,3 +335,18 @@ def get_default_model_name() -> str:
         return configured[0].name
     
     return "gpt-3.5-turbo"
+
+
+def get_fast_model_name() -> Optional[str]:
+    """获取快速模型名称，用于深层 Agent 的深度衰减"""
+    fast_models = get_default_registry().list_by_tag(ModelTag.FAST)
+    configured_fast = [m for m in fast_models if m.is_configured()]
+    if configured_fast:
+        return configured_fast[0].name
+
+    cost_effective = get_default_registry().list_by_tag(ModelTag.COST_EFFECTIVE)
+    configured_ce = [m for m in cost_effective if m.is_configured()]
+    if configured_ce:
+        return configured_ce[0].name
+
+    return None

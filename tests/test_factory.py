@@ -30,7 +30,7 @@ class TestAgentFactory:
         assert agent.config.role == AgentRole.SPECIALIST
 
         tool_names = {tool.name for tool in agent.tools.list_tools()}
-        assert {"read_file", "write_file", "execute_code"} <= tool_names
+        assert {"read_file", "write_file"} <= tool_names
 
     def test_create_from_dict_with_workflow(self):
         config_dir = Path(__file__).parent.parent / "configs"
@@ -103,7 +103,7 @@ class TestAgentFactory:
             assert child.config.memory_config is not None
 
             child_tool_names = {tool.name for tool in child.tools.list_tools()}
-            assert {"read", "execute_code"} <= child_tool_names
+            assert {"read"} <= child_tool_names
 
             runtime_config = child.workspace_path / "runtime_agent.yaml"
             copied_config = child.workspace_path / "agent_config.yaml"

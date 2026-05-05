@@ -80,6 +80,41 @@ class MemorySharing:
             packets.append(self._parse_packet(content))
         return packets
 
+    async def incremental_update(
+        self,
+        from_agent_id: str,
+        to_agent_id: str,
+        target_workspace: Path,
+        direction: SharingDirection = SharingDirection.PARENT_TO_CHILD,
+        updates: Optional[dict[str, str]] = None,
+    ) -> None:
+        if not updates:
+            return
+        shared_dir = target_workspace / "memory" / "shared" / "updates"
+        shared_dir.mkdir(parents=True, exist_ok=True)
+        import time
+        timestamp = int(time.time() * 1000)
+        file_path = shared_dir / f"{from_agent_id}_{timestamp}.md"
+        sections = [f"---\ndirection: {direction.value}\nfrom_agent: {from_agent_id}\nto_agent: {to_agent_id}\ntimestamp: {timestamp}\n---"]
+        for key, value in updates.items():
+            sections.append(f"## {key}\n{value}")
+        file_path.write_text("\n\n".join(sections), encoding="utf-8")
+
+    async def read_incremental_updates(
+        self,
+        workspace_path: Path,
+        since_timestamp: int = 0,
+    ) -> list[SharedMemoryPacket]:
+        updates_dir = workspace_path / "memory" / "shared" / "updates"
+        if not updates_dir.exists():
+            return []
+        packets = []
+        for f in sorted(updates_dir.glob("*.md")):
+            content = f.read_text(encoding="utf-8")
+            packet = self._parse_packet(content)
+            packets.append(packet)
+        return packets
+
     def _parse_packet(self, content: str) -> SharedMemoryPacket:
         import yaml
 

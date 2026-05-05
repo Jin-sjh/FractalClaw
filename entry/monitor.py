@@ -91,7 +91,8 @@ class FractalTreeMonitor:
     def __init__(self):
         self.agents: dict[str, dict[str, Any]] = {}
         self.events: list[dict[str, Any]] = []
-        self.max_events = 100
+        self.max_events = 1000   # 内存缓冲区上限，足够容纳长时间任务的事件
+        self.total_events_seen = 0  # 累计读取的事件总数（不受缓冲区限制）
         self.current_task_id: Optional[str] = None
         self.event_file: Optional[Path] = None
         self.last_position = 0
@@ -101,6 +102,7 @@ class FractalTreeMonitor:
         self.current_task_id = task_id
         self.agents.clear()
         self.events.clear()
+        self.total_events_seen = 0
         monitor_dir = WORKSPACE_PATH / ".monitor"
         self.event_file = monitor_dir / f"{task_id}_events.jsonl"
         self.last_position = 0
@@ -199,6 +201,7 @@ class FractalTreeMonitor:
 
         # Add to event log
         self.events.append(event)
+        self.total_events_seen += 1
         if len(self.events) > self.max_events:
             self.events = self.events[-self.max_events:]
 
@@ -396,7 +399,9 @@ class FractalTreeMonitor:
         status.append("│ ", style="dim")
         status.append(f"Depth: {stats['max_depth']} ", style="cyan")
         status.append("│ ", style="dim")
-        status.append(f"Events: {len(self.events)} ", style="dim")
+        status.append(f"Events: {self.total_events_seen} ", style="dim")
+        if self.total_events_seen > len(self.events):
+            status.append(f"(showing last {len(self.events)}) ", style="dim")
         return status
 
     def update(self) -> Layout:

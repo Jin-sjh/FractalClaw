@@ -44,6 +44,8 @@ ROLE_DEFAULT_TOOLS: dict[str, list[str]] = {
     "specialist": ["read", "write", "edit", "bash", "search", "find_files"],
 }
 
+PROFILE_DEFAULT_TOOLS: dict[str, list[str]] = ROLE_DEFAULT_TOOLS
+
 RUNTIME_TYPE_TOOLS: dict[str, list[str]] = {
     "coder": ["read", "write", "edit", "bash", "search", "find_files"],
     "code": ["read", "write", "edit", "bash", "search", "find_files"],
