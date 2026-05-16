@@ -13,7 +13,8 @@ from fractalclaw.common.types import TaskComplexity
 from fractalclaw.llm import LLMConfig, LLMEngine, LLMResponse
 from fractalclaw.memory import MemoryConfig, MemoryManager, MemoryType
 from fractalclaw.monitor import EventType, emit_agent_event, emit_event
-from fractalclaw.plan import Plan, PlanConfig, PlanManager, Task, TaskPriority, TaskStatus, TaskType
+from fractalclaw.plan import Plan, PlanConfig, PlanManager, Task, TaskPriority, TaskStatus
+from fractalclaw.common.types import TaskStructure
 from fractalclaw.tools import ToolCall, ToolConfig, ToolManager
 from .execution import DelegationGovernance, PlanExecutionEngine
 from .loader import WorkflowConfig, WorkflowStep
@@ -586,13 +587,13 @@ class Agent(ABC):
             id="root",
             name=context.task[:50],
             description=context.task,
-            task_type=TaskType.COMPOSITE,
+            task_type=TaskStructure.COMPOSITE,
         )
         for i, step in enumerate(workflow.steps):
             subtask = self._planner.create_task(
                 name=step.name,
                 description=f"[Step {step.step}] {step.name}: {step.action}",
-                task_type=TaskType.ATOMIC,
+                task_type=TaskStructure.ATOMIC,
                 priority=TaskPriority(i + 1),
             )
             subtask.metadata["workflow_step"] = True
@@ -713,7 +714,7 @@ If needs_subagents is false, set "agents" to [].
             id="root",
             name=context.task[:50],
             description=context.task,
-            task_type=TaskType.COMPOSITE,
+            task_type=TaskStructure.COMPOSITE,
         )
 
         for agent_spec in agents:
@@ -740,7 +741,7 @@ If needs_subagents is false, set "agents" to [].
             subtask = self._planner.create_task(
                 name=name,
                 description=task_desc,
-                task_type=TaskType.ATOMIC,
+                task_type=TaskStructure.ATOMIC,
                 priority=TaskPriority.MEDIUM,
                 dependencies=[],
             )

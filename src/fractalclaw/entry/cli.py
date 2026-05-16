@@ -286,7 +286,7 @@ def execute_task(
 @app.command("list")
 def list_agents():
     """列出所有可用的Agent"""
-    from fractalclaw.agent.loader import ConfigLoader
+    from fractalclaw.agent import ConfigLoader
 
     loader = ConfigLoader(PROJECT_ROOT / "configs")
 

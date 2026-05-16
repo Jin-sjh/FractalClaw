@@ -162,8 +162,8 @@ class FractalClawApp:
         env_path = self.config_path / ".env"
         load_dotenv(env_path)
 
-        from fractalclaw.llm.provider_pool import ProviderPool
-        from fractalclaw.llm.model_router import ModelRouter
+        from fractalclaw.llm import ProviderPool
+        from fractalclaw.llm import ModelRouter
 
         self.provider_pool = ProviderPool()
         self.model_router = ModelRouter(self.provider_pool)
@@ -212,7 +212,7 @@ class FractalClawApp:
 
     def _load_intent_agent_config(self) -> AgentConfig:
         """加载意图识别Agent配置"""
-        from fractalclaw.agent.loader import WorkflowConfig, WorkflowStep
+        from fractalclaw.agent import WorkflowConfig, WorkflowStep
 
         intent_config_path = self.config_path / "configs" / "basic_agents" / "agent_intent_recognition.yaml"
         

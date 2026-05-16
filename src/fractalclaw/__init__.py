@@ -2,6 +2,7 @@
 
 __version__ = "0.1.0"
 
+from fractalclaw.common import TaskComplexity, TaskDomain, TaskStructure
 from fractalclaw.agent import (
     Agent,
     AgentConfig,
@@ -32,7 +33,6 @@ from fractalclaw.plan import (
     Task,
     TaskPriority,
     TaskStatus,
-    TaskType,
 )
 from fractalclaw.tools import (
     ToolCall,
@@ -67,9 +67,11 @@ __all__ = [
     "PlanManager",
     "Planner",
     "Task",
+    "TaskComplexity",
+    "TaskDomain",
     "TaskPriority",
     "TaskStatus",
-    "TaskType",
+    "TaskStructure",
     "ToolCall",
     "ToolConfig",
     "ToolManager",

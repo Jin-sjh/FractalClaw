@@ -3,7 +3,8 @@
 import asyncio
 
 from fractalclaw.agent.base import AgentConfig, AgentContext, AgentResult, AgentRole, BaseAgent, DelegationContext, PlanResult, SubAgentRequirement
-from fractalclaw.plan import Plan, Task, TaskPriority, TaskType
+from fractalclaw.plan import Plan, Task, TaskPriority
+from fractalclaw.common.types import TaskStructure
 from fractalclaw.scheduler.agent_workspace import AgentWorkspaceManager, WorkDocument
 
 
@@ -62,19 +63,19 @@ def test_plan_ready_tasks_only_returns_leaf_nodes():
         id="root",
         name="root",
         description="root",
-        task_type=TaskType.COMPOSITE,
+        task_type=TaskStructure.COMPOSITE,
     )
     child = Task(
         id="child",
         name="child",
         description="child",
-        task_type=TaskType.COMPOSITE,
+        task_type=TaskStructure.COMPOSITE,
     )
     leaf = Task(
         id="leaf",
         name="leaf",
         description="leaf",
-        task_type=TaskType.ATOMIC,
+        task_type=TaskStructure.ATOMIC,
     )
     child.subtasks.append(leaf)
     root.subtasks.append(child)
@@ -129,7 +130,7 @@ def test_execute_subtask_creates_and_uses_child_agent(tmp_path):
         task = parent.planner.create_task(
             name="delegated",
             description="do delegated work",
-            task_type=TaskType.ATOMIC,
+            task_type=TaskStructure.ATOMIC,
             priority=TaskPriority.MEDIUM,
         )
         task.assigned_agent = "ChildWorker"
@@ -177,7 +178,7 @@ def test_existing_child_uses_parent_shared_runtime(tmp_path):
         task = parent.planner.create_task(
             name="delegated",
             description="use static child",
-            task_type=TaskType.ATOMIC,
+            task_type=TaskStructure.ATOMIC,
             priority=TaskPriority.MEDIUM,
         )
         task.assigned_agent = "StaticChild"

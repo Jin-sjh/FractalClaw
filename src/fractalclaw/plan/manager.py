@@ -10,15 +10,12 @@ from typing import Any, Optional
 from fractalclaw.common.types import TaskPriority, TaskStatus, TaskStructure
 
 
-TaskType = TaskStructure
-
-
 @dataclass
 class Task:
     id: str
     name: str
     description: str
-    task_type: TaskType = TaskType.ATOMIC
+    task_type: TaskStructure = TaskStructure.ATOMIC
     status: TaskStatus = TaskStatus.PENDING
     priority: TaskPriority = TaskPriority.MEDIUM
     dependencies: list[str] = field(default_factory=list)
@@ -230,7 +227,7 @@ class PlanManager:
         self,
         name: str,
         description: str,
-        task_type: TaskType = TaskType.ATOMIC,
+        task_type: TaskStructure = TaskStructure.ATOMIC,
         priority: TaskPriority = TaskPriority.MEDIUM,
         dependencies: Optional[list[str]] = None,
         input_data: Optional[dict[str, Any]] = None,

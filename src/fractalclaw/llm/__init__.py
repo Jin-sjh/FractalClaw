@@ -1,6 +1,14 @@
 """LLM module for Agent communication with language models."""
 
-from .engine import LLMConfig, LLMEngine, LLMProvider, LLMResponse, Message, MessageRole, OpenAICompatibleProvider
+from .engine import (
+    LLMConfig,
+    LLMEngine,
+    LLMProvider,
+    LLMResponse,
+    Message,
+    MessageRole,
+    OpenAICompatibleProvider,
+)
 from .model_profile import (
     ModelCapabilities,
     ModelProfile,
@@ -12,17 +20,17 @@ from .model_profile import (
     get_fast_model_name,
     set_default_registry,
 )
-from .model_router import ModelRouter, RoutedModel, TASK_TYPE_ENV_KEYS
+from .model_router import TASK_TYPE_ENV_KEYS, ModelRouter, RoutedModel
 from .model_selector import (
     ModelSelector,
     SelectionResult,
     SmartModelSelector,
+    TaskDomain,
     TaskProfile,
-    TaskType,
 )
-from .provider_pool import ProviderPool, PROVIDER_CONFIG
+from .provider_pool import PROVIDER_CONFIG, ProviderPool
 from .response_parser import extract_json_from_llm_response
-from .task_analyzer import AnalysisResult, AnalysisCache, TaskAnalyzer
+from .task_analyzer import AnalysisCache, AnalysisResult, TaskAnalyzer
 from .weight_calculator import (
     DEFAULT_WEIGHT_RULES,
     DynamicWeightCalculator,
@@ -51,7 +59,7 @@ __all__ = [
     "SmartModelSelector",
     "SelectionResult",
     "TaskProfile",
-    "TaskType",
+    "TaskDomain",
     "ModelRouter",
     "RoutedModel",
     "TASK_TYPE_ENV_KEYS",

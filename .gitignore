@@ -99,6 +99,8 @@ pip-delete-this-directory.txt
 .trae/
 .kiro/
 .hypothesis/
+.pytest_cache/
+.ruff_cache/
 
 workspace/
 docs/

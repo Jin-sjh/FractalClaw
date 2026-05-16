@@ -19,7 +19,8 @@ from fractalclaw.agent.base import (
     PlanResult,
     SubAgentRequirement,
 )
-from fractalclaw.plan import Plan, PlanConfig, Task, TaskPriority, TaskType
+from fractalclaw.plan import Plan, PlanConfig, Task, TaskPriority
+from fractalclaw.common.types import TaskStructure
 from fractalclaw.scheduler import Scheduler, SchedulerConfig
 from fractalclaw.scheduler.agent_workspace import AgentWorkspaceManager
 
@@ -37,7 +38,7 @@ def _make_task(
         id=task_id,
         name=task_id,
         description=description,
-        task_type=TaskType.ATOMIC,
+        task_type=TaskStructure.ATOMIC,
         priority=priority,
     )
     task.assigned_agent = assigned_agent
@@ -92,7 +93,7 @@ def test_prepare_plan_result_collapses_no_benefit_split():
         id="root",
         name="root",
         description="top-level task",
-        task_type=TaskType.COMPOSITE,
+        task_type=TaskStructure.COMPOSITE,
     )
     root.subtasks.append(
         _make_task("task_1", "top-level task", assigned_agent="Child")
@@ -187,7 +188,7 @@ def test_parallel_wave_failure_waits_for_started_siblings(tmp_path):
             id="root",
             name="root",
             description="parallel execution",
-            task_type=TaskType.COMPOSITE,
+            task_type=TaskStructure.COMPOSITE,
         )
         root.subtasks.extend(
             [
@@ -219,7 +220,7 @@ class ReplanOnFailureAgent(BaseAgent):
             id="root",
             name="root",
             description=context.task,
-            task_type=TaskType.COMPOSITE,
+            task_type=TaskStructure.COMPOSITE,
         )
         task = _make_task("task_1", "delegated failure", assigned_agent="Child")
         root.subtasks.append(task)
@@ -567,7 +568,7 @@ def test_fail_fast_parallel_error_stops_queued_parallel_tasks(tmp_path):
             id="root",
             name="root",
             description="fail fast parallel execution",
-            task_type=TaskType.COMPOSITE,
+            task_type=TaskStructure.COMPOSITE,
         )
         root.subtasks.extend(
             [

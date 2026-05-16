@@ -5,8 +5,9 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Callable, Literal, Optional
 
-from .model_selector import TaskProfile, TaskType
 from fractalclaw.common.types import TaskComplexity, TaskDomain, TaskImportance
+
+from .model_selector import TaskProfile
 
 
 @dataclass
@@ -83,21 +84,21 @@ DEFAULT_WEIGHT_RULES: list[WeightRule] = [
     ),
     WeightRule(
         name="code_task",
-        condition=lambda p: p.task_type == TaskType.CODE or p.requires_code,
+        condition=lambda p: p.task_type == TaskDomain.CODE or p.requires_code,
         weights=WeightConfig(capability=0.55, cost=0.20, tag_match=0.25),
         priority=6,
         description="代码任务需要较强的编程能力"
     ),
     WeightRule(
         name="research_task",
-        condition=lambda p: p.task_type == TaskType.RESEARCH or p.requires_reasoning,
+        condition=lambda p: p.task_type == TaskDomain.RESEARCH or p.requires_reasoning,
         weights=WeightConfig(capability=0.60, cost=0.15, tag_match=0.25),
         priority=6,
         description="研究任务需要较强的推理能力"
     ),
     WeightRule(
         name="chat_task",
-        condition=lambda p: p.task_type == TaskType.CHAT,
+        condition=lambda p: p.task_type == TaskDomain.CHAT,
         weights=WeightConfig(capability=0.35, cost=0.35, tag_match=0.30),
         priority=4,
         description="聊天任务平衡能力和成本"

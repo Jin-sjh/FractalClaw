@@ -15,7 +15,7 @@ from ..llm import (
     ModelSelector,
     ModelRegistry,
     TaskProfile,
-    TaskType,
+    TaskDomain,
     SelectionResult,
     get_default_registry,
 )
@@ -52,15 +52,15 @@ class AgentConfigGenerator:
     TOOL_TEMPLATES: dict[str, dict[str, Any]] = {}
 
     TASK_TYPE_MAPPING = {
-        "code": TaskType.CODE,
-        "research": TaskType.RESEARCH,
-        "reasoning": TaskType.REASONING,
-        "chat": TaskType.CHAT,
-        "writing": TaskType.WRITING,
-        "general": TaskType.GENERAL,
-        "coordinate": TaskType.REASONING,
-        "test": TaskType.CODE,
-        "data": TaskType.RESEARCH,
+        "code": TaskDomain.CODE,
+        "research": TaskDomain.RESEARCH,
+        "reasoning": TaskDomain.REASONING,
+        "chat": TaskDomain.CHAT,
+        "writing": TaskDomain.WRITING,
+        "general": TaskDomain.GENERAL,
+        "coordinate": TaskDomain.REASONING,
+        "test": TaskDomain.CODE,
+        "data": TaskDomain.RESEARCH,
     }
     
     COMPLEXITY_INDICATORS = {
@@ -299,15 +299,15 @@ class AgentConfigGenerator:
         except ValueError:
             return None
     
-    def _get_task_type_for_role(self, role: str) -> TaskType:
+    def _get_task_type_for_role(self, role: str) -> TaskDomain:
         """根据角色获取任务类型"""
         role_task_mapping = {
-            "root": TaskType.REASONING,
-            "coordinator": TaskType.REASONING,
-            "worker": TaskType.GENERAL,
-            "specialist": TaskType.GENERAL
+            "root": TaskDomain.REASONING,
+            "coordinator": TaskDomain.REASONING,
+            "worker": TaskDomain.GENERAL,
+            "specialist": TaskDomain.GENERAL
         }
-        return role_task_mapping.get(role, TaskType.GENERAL)
+        return role_task_mapping.get(role, TaskDomain.GENERAL)
     
     def _get_default_model_config(self, task_type: str = None) -> Optional[dict[str, Any]]:
         """从 .env 读取默认模型配置
@@ -792,7 +792,7 @@ class AgentConfigGenerator:
     ) -> list[SelectionResult]:
         """推荐模型"""
         task_profile = TaskProfile(
-            task_type=self.TASK_TYPE_MAPPING.get(task_type, TaskType.GENERAL),
+            task_type=self.TASK_TYPE_MAPPING.get(task_type, TaskDomain.GENERAL),
             complexity=TaskComplexity(complexity) if complexity else TaskComplexity.MEDIUM,
             budget_sensitive=budget_sensitive
         )
