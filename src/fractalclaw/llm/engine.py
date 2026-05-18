@@ -292,31 +292,47 @@ class LLMEngine:
         provider = provider or self._provider
         if not provider:
             raise RuntimeError("LLM provider not set")
-        
+
         if not self._circuit_breaker.can_execute():
             raise LLMException(
                 "Circuit breaker is open, requests are blocked",
                 LLMErrorType.RATE_LIMIT,
                 retryable=False
             )
-        
-        try:
-            response = await provider.complete(messages, self.config, tools)
-            self._circuit_breaker.record_success()
 
-            self.add_assistant_message(response.content, response.tool_calls)
+        last_exception: Optional[Exception] = None
+        for attempt in range(self.config.max_retries + 1):
+            try:
+                response = await provider.complete(messages, self.config, tools)
+                self._circuit_breaker.record_success()
 
-            if response.tool_calls and self._on_tool_call:
-                for tool_call in response.tool_calls:
-                    self._on_tool_call(tool_call)
+                self.add_assistant_message(response.content, response.tool_calls)
 
-            return response
-        except Exception as e:
-            self._circuit_breaker.record_failure()
-            llm_error = self._classify_error(e)
-            if self._on_error:
-                self._on_error(llm_error)
-            raise llm_error from e
+                if response.tool_calls and self._on_tool_call:
+                    for tool_call in response.tool_calls:
+                        self._on_tool_call(tool_call)
+
+                return response
+            except Exception as e:
+                last_exception = e
+                llm_error = self._classify_error(e)
+
+                if self._on_error:
+                    self._on_error(llm_error)
+
+                if not llm_error.retryable or attempt >= self.config.max_retries:
+                    self._circuit_breaker.record_failure()
+                    raise llm_error from e
+
+                wait_time = self.config.retry_delay * (2 ** attempt)
+                logger.warning(
+                    f"Complete error ({llm_error.error_type.value}), "
+                    f"retrying in {wait_time}s (attempt {attempt + 1}/{self.config.max_retries})"
+                )
+                await asyncio.sleep(wait_time)
+
+        self._circuit_breaker.record_failure()
+        raise self._classify_error(last_exception) if last_exception else LLMException("Unknown error")
 
     async def _stream_and_collect(
         self,

@@ -539,7 +539,15 @@ class Agent(ABC):
                 constraints=self._extract_constraints(requirement),
             )
 
-        child._delegation_ctx = self._delegation_ctx
+        child._delegation_ctx = DelegationContext(
+            depth=self._delegation_ctx.depth + 1,
+            branch_path=self._delegation_ctx.branch_path,
+            seen_fingerprints=self._delegation_ctx.seen_fingerprints,
+            delegation_budget=self._delegation_ctx.delegation_budget,
+            branch_budget=self._delegation_ctx.branch_budget,
+            max_depth=self._delegation_ctx.max_depth,
+            governance_rejections=self._delegation_ctx.governance_rejections,
+        )
 
         if child.get_parent() is None:
             self.add_child(child)
@@ -941,18 +949,16 @@ Available tools: {[t.name for t in self._tools.list_tools() if t.is_available()]
 
 Respond with ONLY this JSON (no markdown fences):
 {{
-  "complexity": "simple" | "moderate" | "complex",
+  "complexity": "simple" | "medium" | "complex",
   "steps": ["step 1", "step 2", ...]
 }}
 """
         response = await self._llm.chat(prompt)
         data = extract_json_from_llm_response(response.content) or {}
 
-        complexity_str = data.get("complexity", "moderate")
-        try:
-            complexity = TaskComplexity(complexity_str)
-        except ValueError:
-            complexity = TaskComplexity.MEDIUM
+        complexity_str = data.get("complexity", "medium").lower()
+        _complexity_map = {"simple": TaskComplexity.SIMPLE, "medium": TaskComplexity.MEDIUM, "complex": TaskComplexity.COMPLEX}
+        complexity = _complexity_map.get(complexity_str, TaskComplexity.MEDIUM)
 
         steps = data.get("steps") or [context.task]
 
@@ -1091,7 +1097,15 @@ Respond with ONLY this JSON (no markdown fences):
     async def _execute_delegated_task(
         self, child: "Agent", task: Task, context: AgentContext
     ) -> AgentResult:
-        child._delegation_ctx = self._delegation_ctx
+        child._delegation_ctx = DelegationContext(
+            depth=self._delegation_ctx.depth + 1,
+            branch_path=self._delegation_ctx.branch_path,
+            seen_fingerprints=self._delegation_ctx.seen_fingerprints,
+            delegation_budget=self._delegation_ctx.delegation_budget,
+            branch_budget=self._delegation_ctx.branch_budget,
+            max_depth=self._delegation_ctx.max_depth,
+            governance_rejections=self._delegation_ctx.governance_rejections,
+        )
         sub_ctx = AgentContext(
             task=task.description,
             parent_id=self._id,

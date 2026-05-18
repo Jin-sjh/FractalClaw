@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import uuid
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -209,19 +210,15 @@ class PlanManager:
         self.config = config or PlanConfig()
         self._planner: Optional[Planner] = None
         self._plans: dict[str, Plan] = {}
-        self._task_counter = 0
-        self._plan_counter = 0
 
     def set_planner(self, planner: Planner) -> None:
         self._planner = planner
 
     def _generate_task_id(self) -> str:
-        self._task_counter += 1
-        return f"task_{self._task_counter}"
+        return f"task_{uuid.uuid4().hex[:8]}"
 
     def _generate_plan_id(self) -> str:
-        self._plan_counter += 1
-        return f"plan_{self._plan_counter}"
+        return f"plan_{uuid.uuid4().hex[:8]}"
 
     def create_task(
         self,

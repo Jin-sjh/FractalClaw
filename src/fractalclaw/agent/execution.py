@@ -170,11 +170,8 @@ class DelegationGovernance:
     ) -> bool:
         _delegation_keywords = [
             "fullstack", "full_stack", "full stack",
-            "app", "application", "system", "project", "platform",
             "developer", "builder", "creator", "generator",
-            "模块", "module", "系统", "应用", "项目",
             "前端", "后端", "frontend", "backend", "database",
-            "api", "组件", "component", "服务", "service",
         ]
         _task_text = (context.task + " " + (plan_result.reasoning or "")).lower()
         _has_keyword = any(kw in _task_text for kw in _delegation_keywords)
@@ -186,16 +183,17 @@ class DelegationGovernance:
         _is_multi_file = getattr(plan_result, 'estimated_files', 0) >= 2
         _has_modules = getattr(plan_result, 'has_multiple_modules', False)
         _many_tool_types = len(getattr(plan_result, 'required_tool_types', set())) >= 3
-        _long_task = len(context.task) > 100
+        _long_task = len(context.task) > 300
 
-        return (
-            _has_keyword
-            or _is_root_or_coordinator
-            or _is_multi_file
-            or _has_modules
-            or _many_tool_types
-            or _long_task
-        )
+        _conditions = [
+            _has_keyword,
+            _is_root_or_coordinator,
+            _is_multi_file,
+            _has_modules,
+            _many_tool_types,
+            _long_task,
+        ]
+        return sum(_conditions) >= 2
 
     def evaluate_requirement(
         self,

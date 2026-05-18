@@ -244,7 +244,7 @@ def run_agent():
                 _show_boot_error()
                 raise typer.Exit(1)
 
-    from entry.main import FractalClawApp
+    from fractalclaw.entry.main import FractalClawApp
     asyncio.run(FractalClawApp().run())
 
 
@@ -267,7 +267,7 @@ def execute_task(
     console.print(f"[bold #82AAFF]✦ 执行任务:[/bold #82AAFF] {instruction}")
 
     async def run_task():
-        from entry.main import FractalClawApp
+        from fractalclaw.entry.main import FractalClawApp
         app_instance = FractalClawApp()
         await app_instance.initialize()
         result = await app_instance.process_user_input(instruction)
@@ -330,7 +330,7 @@ def run_monitor(
     """启动 FractalClaw 监控面板"""
     if server:
         try:
-            from entry.monitor_server import MonitorWebSocketServer
+            from fractalclaw.entry.monitor_server import MonitorWebSocketServer
             ws_server = MonitorWebSocketServer(port=port)
             if task:
                 ws_server.set_task(task)
@@ -343,7 +343,7 @@ def run_monitor(
 
     if web:
         try:
-            from entry.monitor_web import main as web_main
+            from fractalclaw.entry.monitor_web import main as web_main
             import sys as sys_module
             original_argv = sys_module.argv
             sys_module.argv = [
@@ -363,7 +363,7 @@ def run_monitor(
 
     # Default: terminal monitor
     try:
-        from entry.monitor import main as monitor_main
+        from fractalclaw.entry.monitor import main as monitor_main
         import sys as sys_module
         original_argv = sys_module.argv
         sys_module.argv = ["monitor"]

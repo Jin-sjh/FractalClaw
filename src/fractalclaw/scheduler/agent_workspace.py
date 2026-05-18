@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import asyncio
 import json
 import shutil
 from collections import deque
@@ -56,7 +55,7 @@ class LogEntry:
 
 class LogBuffer:
     """日志缓冲区，用于批量写入日志以提高性能"""
-    
+
     def __init__(
         self,
         max_size: int = 100,
@@ -65,7 +64,6 @@ class LogBuffer:
         self.max_size = max_size
         self.flush_interval = flush_interval
         self._buffer: deque[dict[str, Any]] = deque()
-        self._lock = asyncio.Lock()
         self._last_flush: Optional[float] = None
     
     def add(self, entry: dict[str, Any]) -> bool:

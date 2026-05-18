@@ -56,10 +56,21 @@ def extract_json_from_llm_response(text: str) -> Optional[dict[str, Any]]:
         if result is not None:
             return result
 
-    greedy_match = re.search(r"\{[\s\S]*\}", text)
-    if greedy_match:
-        result = _try_parse_json(greedy_match.group())
-        if result is not None:
-            return result
+    # Try to find a balanced JSON object by tracking brace depth
+    start = text.find("{")
+    while start != -1:
+        depth = 0
+        for i in range(start, len(text)):
+            if text[i] == "{":
+                depth += 1
+            elif text[i] == "}":
+                depth -= 1
+                if depth == 0:
+                    candidate = text[start:i + 1]
+                    result = _try_parse_json(candidate)
+                    if result is not None:
+                        return result
+                    break
+        start = text.find("{", start + 1)
 
     return None

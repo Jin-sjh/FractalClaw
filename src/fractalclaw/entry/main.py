@@ -10,15 +10,26 @@ import random
 import re
 import logging
 import yaml
+from contextlib import nullcontext
 from pathlib import Path
 from typing import Optional, Any
 from dataclasses import dataclass
 
-from prompt_toolkit import PromptSession, print_formatted_text
-from prompt_toolkit.patch_stdout import patch_stdout
-from prompt_toolkit.formatted_text import ANSI
-from prompt_toolkit.styles import Style
-from prompt_toolkit.application import get_app
+try:
+    from prompt_toolkit import PromptSession, print_formatted_text
+    from prompt_toolkit.patch_stdout import patch_stdout
+    from prompt_toolkit.formatted_text import ANSI
+    from prompt_toolkit.styles import Style
+    from prompt_toolkit.application import get_app
+    _HAS_PROMPT_TOOLKIT = True
+except ImportError:
+    _HAS_PROMPT_TOOLKIT = False
+    PromptSession = None  # type: ignore[assignment,misc]
+    print_formatted_text = print  # type: ignore[assignment]
+    patch_stdout = nullcontext  # type: ignore[assignment]
+    ANSI = str  # type: ignore[assignment]
+    Style = None  # type: ignore[assignment]
+    get_app = None  # type: ignore[assignment]
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent.parent
 
@@ -638,6 +649,9 @@ class FractalClawApp:
 
     async def run(self):
         """运行主应用"""
+        if not _HAS_PROMPT_TOOLKIT:
+            print("Error: prompt_toolkit is required for interactive mode. Install it with: pip install prompt-toolkit")
+            return
         print_banner()
         
         try:
